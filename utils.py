@@ -15,6 +15,9 @@ import datetime
 import torch
 import torch.distributed as dist
 
+import seaborn as sns
+import pandas as pd
+import matplotlib.pyplot as plt
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -260,3 +263,66 @@ class CosineCycle:
         if update:
             self.n += 1
         return self.values[m]
+
+####################### New #############################
+
+def plot_confusion_matrix(confusion_matrix, class_names, output_dir):
+    df_cm = pd.DataFrame(confusion_matrix, index=class_names, columns=class_names).astype(int)
+    heatmap = sns.heatmap(df_cm, annot=True, fmt="d")
+    heatmap.yaxis.set_ticklabels(heatmap.yaxis.get_ticklabels(), rotation=0, ha='right',fontsize=15)
+    heatmap.xaxis.set_ticklabels(heatmap.xaxis.get_ticklabels(), rotation=45, ha='right',fontsize=15)
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.savefig(str(output_dir) + '/confusion_matrix.png', dpi=300, bbox_inches='tight')
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the accuracy over the k top predictions for the specified values of k"""
+    maxk = min(max(topk), output.size(1))
+    batch_size = target.size(0)
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.reshape(1, -1).expand_as(pred))
+    return [correct[:min(k, maxk)].reshape(-1).float().sum(0) * 100. / batch_size for k in topk]
+
+def plot_loss_curves(results, output_dir):
+    """Plots training curves of a results dictionary.
+    Args:
+        results (dict): dictionary containing list of values, e.g.
+            {"train_loss": [...],
+             "test_loss": [...],
+            }
+    """
+    loss = results["train_loss"]
+    test_loss = results["test_loss"]
+    
+    epochs = range(len(results["train_loss"]))
+    
+    fig, ax = plt.subplots(figsize=(15, 7))
+
+    # Plot loss
+    ax.plot(epochs, loss, label="train_loss")
+    ax.plot(epochs, test_loss, label="test_loss")
+    ax.set_title("Loss")
+    ax.set_xlabel("Epochs")
+    ax.legend()
+
+    # Save the figure
+    fig.savefig(str(output_dir) + '/train_test_loss.png')
+    
+    
+def plot_roc_curve(fpr, tpr, roc_auc, output_dir):
+    
+    # Plot ROC curve
+    plt.figure()
+    lw = 2
+    plt.plot(fpr, tpr, color='darkorange', lw=lw, label='ROC curve (AUC = %0.2f)' % roc_auc)
+    plt.plot([0, 1], [0, 1], color='navy', lw=lw, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver operating characteristic')
+    plt.legend(loc="lower right")
+   
+    plt.savefig(str(output_dir) + '/roc_curve.png')
+    

@@ -14,6 +14,8 @@ from timm.data import create_transform
 
 from folder2lmdb import ImageFolderLMDB
 
+import torch
+
 
 class INatDataset(ImageFolder):
     def __init__(self, root, train=True, year=2018, transform=None, target_transform=None,
@@ -83,6 +85,9 @@ def build_dataset(is_train, args):
         dataset = INatDataset(args.data_path, train=is_train, year=2019,
                               category=args.inat_category, transform=transform)
         nb_classes = dataset.nb_classes
+        
+    if args.custom_class:
+        nb_classes = len(torch.unique(torch.tensor(dataset.targets)))
 
     return dataset, nb_classes
 

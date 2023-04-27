@@ -17,14 +17,14 @@ from pathlib import Path
 
 from timm.data import Mixup
 from timm.models import create_model
-from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
+#from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.scheduler import create_scheduler
 from timm.optim import create_optimizer
 from timm.utils import NativeScaler, get_state_dict, ModelEma
 
 from datasets import build_dataset
 from engine import train_one_epoch, evaluate, visualize_mask
-from losses import DistillationLoss
+from losses import DistillationLoss, LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from samplers import RASampler
 import models
 import utils
@@ -38,11 +38,21 @@ from collections import Counter
 
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
+    
+    parser = argparse.ArgumentParser('EViT training and evaluation script', add_help=False)
     parser.add_argument('--batch-size', default=64, type=int)
     parser.add_argument('--epochs', default=300, type=int)
+    
+    # New argument (Done by Diogo Araújo)
+    parser.add_argument('--custom_class', action='store_true', default=False, 
+                        help='Defines the number of classes. Important for the class weights')
+    
+    parser.add_argument('--pretrained_dataset_name', default='ImageNet1k', type=str, metavar='DATASET')
+    parser.add_argument('--finetune_dataset_name', default='ISIC2019-Clean', type=str, metavar='DATASET')
+    
+    
 
-    # arguments related to the shrinking of inattentive tokens
+    # Arguments related to the shrinking of inattentive tokens
     parser.add_argument('--test_speed', action='store_true', help='whether to measure throughput of model')
     parser.add_argument('--only_test_speed', action='store_true', help='only measure throughput of model')
     parser.add_argument('--fuse_token', action='store_true', help='whether to fuse the inattentive tokens')
@@ -55,7 +65,8 @@ def get_args_parser():
     parser.add_argument('--drop_loc', default='(3, 6, 9)', type=str, 
                         help='the layer indices for shrinking inattentive tokens')
 
-    # Model parameters
+    ################################### Model parameters #################################
+    
     parser.add_argument('--model', default='deit_base_patch16_224', type=str, metavar='MODEL',
                         help='Name of model to train')
     parser.add_argument('--input-size', default=224, type=int, help='images input size')
@@ -71,20 +82,25 @@ def get_args_parser():
     parser.add_argument('--model-ema-decay', type=float, default=0.99996, help='')
     parser.add_argument('--model-ema-force-cpu', action='store_true', default=False, help='')
 
-    # Optimizer parameters
+    ###############################  Optimizer parameters ##################################
+    
     parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
                         help='Optimizer (default: "adamw"')
     parser.add_argument('--opt-eps', default=1e-8, type=float, metavar='EPSILON',
                         help='Optimizer Epsilon (default: 1e-8)')
     parser.add_argument('--opt-betas', default=None, type=float, nargs='+', metavar='BETA',
                         help='Optimizer Betas (default: None, use opt default)')
+    # They don't use gradient cliping
     parser.add_argument('--clip-grad', type=float, default=None, metavar='NORM',
                         help='Clip gradient norm (default: None, no clipping)')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                         help='SGD momentum (default: 0.9)')
     parser.add_argument('--weight-decay', type=float, default=0.05,
                         help='weight decay (default: 0.05)')
-    # Learning rate schedule parameters
+    
+    
+    ###########################  Learning rate schedule parameters #############################
+    
     parser.add_argument('--sched', default='cosine', type=str, metavar='SCHEDULER',
                         help='LR scheduler (default: "cosine"')
     parser.add_argument('--lr', type=float, default=5e-4, metavar='LR',
@@ -111,7 +127,8 @@ def get_args_parser():
     parser.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RATE',
                         help='LR decay rate (default: 0.1)')
 
-    # Augmentation parameters
+    ##################################  Augmentation parameters #####################################
+    
     parser.add_argument('--color-jitter', type=float, default=0.4, metavar='PCT',
                         help='Color jitter factor (default: 0.4)')
     parser.add_argument('--aa', type=str, default='rand-m9-mstd0.5-inc1', metavar='NAME',
@@ -178,8 +195,14 @@ def get_args_parser():
     parser.add_argument('--resume', default='', help='resume from checkpoint')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
-    parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
+   
+    parser.add_argument('--eval', action='store_true', help='Perform evaluation only') 
+    parser.add_argument('--finetune', action='store_true', help='Perform Finetuning and eval')
+    parser.add_argument('--train', action='store_true', help='Train from scratch and eval') 
+
+    ## Visualize mask
     parser.add_argument('--visualize_mask', action='store_true', help='Visualize the dropped image patches and then exit')
+    
     parser.add_argument('--n_visualization', default=128, type=int)
     parser.add_argument('--dist-eval', action='store_true', default=False, help='Enabling distributed evaluation')
     parser.add_argument('--num_workers', default=10, type=int)
@@ -193,17 +216,28 @@ def get_args_parser():
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
+    
+    # (NEW) Imbalanced dataset parameters
+    parser.add_argument('--class_weights', action='store_true', default=False,
+                    help='Enabling class weighting')
+    parser.add_argument('--class_weights_type', default='Manual', choices=['Median', 'Manual'], 
+                        type=str, help="")
+
     return parser
 
 
 def main(args):
     
+    # I Will not use distributed training
     utils.init_distributed_mode(args)
-    print(f"Arguments: {args}\n")
+
+    for arg in vars(args):
+        print(f"{arg}: {getattr(args, arg)}")
 
     if args.distillation_type != 'none' and args.finetune and not args.eval:
         raise NotImplementedError("Finetuning with distillation not yet supported")
 
+    # Set device
     device = torch.device(args.device)
     print(f"Device: {device}\n")
 
@@ -215,19 +249,15 @@ def main(args):
 
     cudnn.benchmark = True
 
-    # Build the dataset
+    ################################ Build the dataset ################################
+    
     dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
     dataset_val, _ = build_dataset(is_train=False, args=args)
     
-    # Check the distribution of the dataset
-    train_dist = dict(Counter(dataset_train.targets))
-    val_dist = dict(Counter(dataset_val.targets))
-    print(f"Classes: {dataset_train.classes}\n")
-    print(f"Classes map: {dataset_train.class_to_idx}\n")
-    print(f"Train distribution: {train_dist}\n")
-    print(f"Val distribution: {val_dist}\n")
-
-    if True:  # args.distributed:
+    ###################################################################################
+    
+    #if True:
+    if args.distributed:
         num_tasks = utils.get_world_size()
         global_rank = utils.get_rank()
         if args.repeated_aug:
@@ -247,12 +277,12 @@ def main(args):
                 dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=False)
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-    # else:
-    #     sampler_train = torch.utils.data.RandomSampler(dataset_train)
-    #     sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+    else:
+        sampler_train = torch.utils.data.RandomSampler(dataset_train)
+        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
-
-    # Build the data loaders
+    ###################################  Data loader ####################################
+    
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
         batch_size=args.batch_size,
@@ -260,7 +290,7 @@ def main(args):
         pin_memory=args.pin_mem,
         drop_last=True,
     )
-
+    
     data_loader_val = torch.utils.data.DataLoader(
         dataset_val, sampler=sampler_val,
         batch_size=int(1.5 * args.batch_size),
@@ -268,16 +298,64 @@ def main(args):
         pin_memory=args.pin_mem,
         drop_last=False
     )
+    
+    ############################ Define the Class Weights ############################
 
+    # Check the distribution of the dataset
+    train_dist = dict(Counter(dataset_train.targets))
+    val_dist = dict(Counter(dataset_val.targets))
+    
+    train_dist['MEL'] = train_dist.pop(0)
+    train_dist['NV'] = train_dist.pop(1)
+    val_dist['MEL'] = val_dist.pop(0)
+    val_dist['NV'] = val_dist.pop(1)
+    
+    n_train_samples = len(dataset_train)
+    
+    print(f"Classes: {dataset_train.classes}\n")
+    print(f"Classes map: {dataset_train.class_to_idx}\n")
+    print(f"Train distribution: {train_dist}\n")
+    print(f"Val distribution: {val_dist}\n")
+    
+    if args.class_weights:
+        if args.class_weights_type == 'Median':
+            class_weight = torch.Tensor([n_train_samples/train_dist['MEL'], 
+                                         n_train_samples/ train_dist['NV']]).to(device)
+        elif args.class_weights_type == 'Manual':                   
+            class_weight = torch.Tensor([n_train_samples/(2*train_dist['MEL']), 
+                                         n_train_samples/(2*train_dist['NV'])]).to(device)
+    else: 
+        class_weight = None
+    
+    print(f"Class weights: {class_weight}\n")
+    
+    ###################################################################################
+
+    ################################# Mixup -> Not used ################################
+    
+    mixup_active = False # Set the flag to false
     mixup_fn = None
-    mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
+    #mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
     if mixup_active:
+        print("Using mixup / cutmix -> Not good fot the case of dermoscopic images -> Disabling it\n")
         mixup_fn = Mixup(
             mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
-    print(f"Creating model: {args.model}\n")
+    ###################################################################################
+    
+    
+    ################################### Create model ###################################
+    
+    print(f"Creating model: {args.model}")
+    print(f"Base_keep_rate: {args.base_keep_rate}")
+    print(f"drop_loc: {eval(args.drop_loc)}")
+    print(f"num_classes: {args.nb_classes}")
+    print(f"drop_rate: {args.drop}")
+    print(f"fuse_token: {args.fuse_token}")
+    print(f"img_size: ({args.input_size, args.input_size})\n")
+    
     model = create_model(
         args.model,
         base_keep_rate=args.base_keep_rate,
@@ -290,9 +368,13 @@ def main(args):
         fuse_token=args.fuse_token,
         img_size=(args.input_size, args.input_size)
     )
-
+    
+    ###################################################################################
+    
+    ############################## Load the pretrained model ##########################
+    
     if args.finetune:
-        
+        print("* Importing model for finetuning")
         if args.finetune.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.finetune, map_location='cpu', check_hash=True)
@@ -328,10 +410,14 @@ def main(args):
 
         model.load_state_dict(checkpoint_model, strict=False)
 
+    # Set model to device   
     model.to(device)
 
+    # Set output directory
     output_dir = Path(args.output_dir)
 
+    ########################## Test speed this will be important #################################
+    
     if (args.test_speed or args.only_test_speed) and utils.is_main_process():
         # test model throughput for three times to ensure accuracy
         inference_speed = speed_test(model)
@@ -353,9 +439,13 @@ def main(args):
                     f.write(log)
         log_func1(inference_speed=inference_speed, GMACs=MACs * 1e-9)
         log_func1(args=args)
+        
     if args.only_test_speed:
         return
+    
+    ##############################################################################################
 
+    # EMA - Understand this better
     model_ema = None
     if args.model_ema:
         # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
@@ -369,30 +459,42 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
+
+
+    ##################################  PARAMETERS #####################################
     
     # Number of parameters
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of parameters: {n_parameters}\n")
 
+    # Important !!!
     if args.test_speed and utils.is_main_process():
         log_func1(n_parameters=n_parameters * 1e-6)
-
+    
+    # Learning rate
     linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
     args.lr = linear_scaled_lr
+    
     optimizer = create_optimizer(args, model_without_ddp)
+    
     loss_scaler = NativeScaler()
 
     lr_scheduler, _ = create_scheduler(args, optimizer)
-
-    criterion = LabelSmoothingCrossEntropy()
-
-    if args.mixup > 0.:
+    
+    # Regarding the loss function I want cross entropy loss
+    criterion = LabelSmoothingCrossEntropy(weight=class_weight)
+    
+    print("Loss being used:")
+    if mixup_active:
+        print("Using Mixup loss\n")
         # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
+        criterion = SoftTargetCrossEntropy(weight=class_weight)
     elif args.smoothing:
-        criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
+        print("Using Label Smoothing loss\n")
+        criterion = LabelSmoothingCrossEntropy(weight=class_weight,smoothing=args.smoothing)
     else:
-        criterion = torch.nn.CrossEntropyLoss()
+        print("Using Cross Entropy loss\n")
+        criterion = torch.nn.CrossEntropyLoss(weight=class_weight)
 
     teacher_model = None
     if args.distillation_type != 'none':
@@ -413,11 +515,12 @@ def main(args):
         teacher_model.to(device)
         teacher_model.eval()
 
-    # wrap the criterion in our custom DistillationLoss, which
-    # just dispatches to the original criterion if args.distillation_type is 'none'
+    # Wrap the criterion in our custom DistillationLoss, which
+    # Just dispatches to the original criterion if args.distillation_type is 'none'
     criterion = DistillationLoss(
         criterion, teacher_model, args.distillation_type, args.distillation_alpha, args.distillation_tau
     )
+
 
     if utils.is_main_process():
         print("output_dir:", args.output_dir)
@@ -441,69 +544,165 @@ def main(args):
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
 
-    if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        return
-
+    ######################################### Visualize Mask ###############################################
+    
     if args.visualize_mask:
         visualize_mask(data_loader_val, model, device, args.output_dir, args.n_visualization, args.fuse_token)
         return
 
-    print(f"Start training for {args.epochs} epochs")
-    start_time = time.time()
-    max_accuracy = 0.0
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
+    ######################################### Training & Eval ##############################################
 
-        train_stats, keep_rate = train_one_epoch(
-            model, criterion, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            args.clip_grad, model_ema, mixup_fn, writer,
-            set_training_mode=args.finetune == '',  # keep in eval mode during finetuning
-            args=args
-        )
 
-        lr_scheduler.step(epoch)
-        if args.output_dir:
-            checkpoint_paths = [output_dir / 'checkpoint.pth']
-            for checkpoint_path in checkpoint_paths:
-                utils.save_on_master({
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'model_ema': get_state_dict(model_ema),
-                    'scaler': loss_scaler.state_dict(),
-                    'args': args,
-                }, checkpoint_path)
+    log_args = [
+        '---------------- Logs for {} finetuning ----------------'.format(args.model),
+        'Model Pretrained on: {}'.format(args.pretrained_dataset_name),
+        'Model Finedtuned on: {}'.format(args.finetuned_dataset_name),
+        'number of classes: {}'.format(args.nb_classes),
+        'number of epochs: {}'.format(args.epochs),
+        'batch size: {}'.format(args.batch_size),
+        'learning rate: {}'.format(args.lr),
+        'scheduler: {}'.format(args.sched),
+        'optimizer: {}'.format(args.opt),
+        'loss function: {}'.format(criterion),
+        'class weights: {}'.format(class_weight),
+        'weight decay: {}'.format(args.weight_decay),
+        'momentum: {}'.format(args.momentum),
+        'fuse_token: {}'.format(args.fuse_token),
+        'base_keep_rate: {}'.format(args.base_keep_rate),
+        'drop_loc: {}'.format(args.drop_loc),
+        'drop_path_rate: {}\n'.format(args.drop_path),
+        '---------------- Start training for {} epochs ----------------'.format(args.epochs)
+    ]
+            
+    if args.finetune or args.train:
 
-        test_interval = 30
-        if epoch % test_interval == 0 or epoch == args.epochs - 1:
-            test_stats = evaluate(data_loader_val, model, device, keep_rate)
+        print(f"Start training for {args.epochs} epochs")
+        start_time = time.time()
+
+        # New
+        log_list = [] 
+        max_bacc = 0.0
+        loss_stats = {
+            "train_loss": [],
+            "test_loss": []
+            }
+        
+        for epoch in range(args.start_epoch, args.epochs):
+            
+            if args.distributed:
+                data_loader_train.sampler.set_epoch(epoch)
+
+            train_stats, keep_rate = train_one_epoch(
+                model, criterion, data_loader_train,
+                optimizer, device, epoch, loss_scaler,
+                args.clip_grad, model_ema, mixup_fn, writer,
+                set_training_mode=args.finetune == '',  # keep in eval mode during finetuning
+                args=args
+            )
+
+            lr_scheduler.step(epoch)
+            
+            if args.output_dir:
+                checkpoint_paths = [output_dir / 'checkpoint.pth']
+                for checkpoint_path in checkpoint_paths:
+                    utils.save_on_master({
+                        'model': model_without_ddp.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'lr_scheduler': lr_scheduler.state_dict(),
+                        'epoch': epoch,
+                        'model_ema': get_state_dict(model_ema),
+                        'scaler': loss_scaler.state_dict(),
+                        'args': args,
+                    }, checkpoint_path)
+
+            test_interval = 30
+            
+            """ if epoch % test_interval == 0 or epoch == args.epochs - 1:
+                test_stats = evaluate(data_loader_val, model, device, keep_rate)
+                print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+                max_accuracy = max(max_accuracy, test_stats["acc1"])
+                print(f'Max accuracy: {max_accuracy:.2f}%')
+                test_stats1 = {f'test_{k}': v for k, v in test_stats.items()}
+            else:
+                test_stats1 = {}
+
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                        **test_stats1,
+                        'epoch': epoch,
+                        'n_parameters': n_parameters} """
+            
+            
+            ########################## Evaluate on the test dataset ############################
+            
+            test_stats = evaluate(data_loader_val, model, device)
+            #print("Train stats: ", train_stats)
+            print("Test stats: ", test_stats)
             print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-            max_accuracy = max(max_accuracy, test_stats["acc1"])
-            print(f'Max accuracy: {max_accuracy:.2f}%')
-            test_stats1 = {f'test_{k}': v for k, v in test_stats.items()}
-        else:
-            test_stats1 = {}
+            
+            # I want to save the model with the best BACC
+            if max_bacc < test_stats["bacc"]:
+                max_bacc = test_stats["bacc"]
+                best_test_stats = test_stats # I am saving the test_stats of the model with the best BACC
+                if args.output_dir:
+                    checkpoint_paths = [output_dir / 'best_checkpoint.pth']
+                    for checkpoint_path in checkpoint_paths:
+                        utils.save_on_master({
+                            'model': model_without_ddp.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'lr_scheduler': lr_scheduler.state_dict(),
+                            'epoch': epoch,
+                            'model_ema': get_state_dict(model_ema),
+                            'scaler': loss_scaler.state_dict(),
+                            'args': args,
+                        }, checkpoint_path)
+                
+            print(f'* Max Test BACC: {100*max_bacc:.2f}%')
+            
+            # Save the loss values
+            loss_stats["train_loss"].append(train_stats["loss"])
+            loss_stats["test_loss"].append(test_stats["loss"])
 
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **test_stats1,
-                     'epoch': epoch,
-                     'n_parameters': n_parameters}
+            log_list.append([
+                f"epoch: {epoch} | train_lr: {train_stats['lr']:.4e} | train_loss: {train_stats['loss']:.4f} | test_loss: {test_stats['loss']:.4f} | test_acc1: {test_stats['acc1']:.4f}"
+            ])
 
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
-            if epoch % test_interval == 0 or epoch == args.epochs - 1:
-                writer.add_scalar('test_acc1', test_stats["acc1"], epoch)
-                writer.add_scalar('test_acc5', test_stats["acc5"], epoch)
+            if args.output_dir and utils.is_main_process():
+                """ with (output_dir / "log.txt").open("a") as f:
+                    f.write(json.dumps(log_stats) + "\n") """
+                if epoch % test_interval == 0 or epoch == args.epochs - 1:
+                    writer.add_scalar('test_acc1', test_stats["acc1"], epoch)
+                    writer.add_scalar('test_acc5', test_stats["acc5"], epoch)
 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+        # Plot the loss curves
+        utils.plot_loss_curves(loss_stats, output_dir) 
+        
+        # Compute the total training time
+        total_time = time.time() - start_time
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        print('Training time {}'.format(total_time_str))
+    
+    elif args.eval:
+        best_test_stats = evaluate(data_loader_val, model, device)
+        total_time_str = '0'
+
+    # Plot confusion matrix & ROC curve
+    utils.plot_confusion_matrix(best_test_stats['confusion_matrix'], dataset_val.classes, output_dir)
+    utils.plot_roc_curve(best_test_stats['fpr'], best_test_stats['tpr'], best_test_stats['auc'], output_dir)
+
+    # Write the best test stats in a file
+    log_test_stats = [
+        '\n---------------- Test stats for the best model ----------------',
+        f'BACC: {best_test_stats["bacc"]:.4f}',
+        f'MEL Precision: {best_test_stats["precision"][0]:.4f} | MEL Recall: {best_test_stats["recall"][0]:.4f} | MEL F1-score: {best_test_stats["f1_score"][0]:.4f}',
+        f'NV Precision: {best_test_stats["precision"][1]:.4f} | NV Recall: {best_test_stats["recall"][1]:.4f} | NV F1-score: {best_test_stats["f1_score"][1]:.4f}',
+        f'ROC AUC: {best_test_stats["auc"]:.4f}',
+        f'Training time {total_time_str}'
+    ]
+
+    if args.output_dir and utils.is_main_process():
+        with (output_dir / "log.txt").open("a") as f:
+            #f.write('\n'.join(log_args) + '\n' + json.dumps(list(log_list)) + '\n' + '\n'.join(log_test_stats) + '\n')
+            f.write('\n'.join(log_args) + '\n' + '\n'.join(str(item) for item in log_list) + '\n' + '\n'.join(log_test_stats) + '\n')
 
 
 if __name__ == '__main__':

@@ -22,6 +22,10 @@ from helpers import adjust_keep_rate
 from visualize_mask import get_real_idx, mask, save_img_batch
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
+from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score, balanced_accuracy_score, roc_curve, auc
+
+import numpy as np
+
 
 def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -30,6 +34,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     writer=None,
                     set_training_mode=True,
                     args=None):
+    
     model.train(set_training_mode)
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -95,30 +100,59 @@ def evaluate(data_loader, model, device, keep_rate=None):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
 
-    # switch to evaluation mode
+    # Switch to evaluation mode
     model.eval()
-
+    
+    preds = []
+    targets = []
+    
     for images, target in metric_logger.log_every(data_loader, 10, header):
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
-        # compute output
+        # Compute output
         with torch.cuda.amp.autocast():
-            output = model(images, keep_rate)
+            output = model(images)
             loss = criterion(output, target)
 
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+        
+        preds.append(output.argmax(dim=1).cpu().numpy())
+        targets.append(target.cpu().numpy())
 
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
         metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
-    # gather the stats from all processes
+        
+    # Gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
 
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    # Compute confusion matrix, f1-score, precision, and recall
+    preds = np.concatenate(preds)
+    targets = np.concatenate(targets)
+    cm = confusion_matrix(targets, preds)
+    f1 = f1_score(targets, preds, average=None)
+    precision = precision_score(targets, preds, average=None)
+    recall = recall_score(targets, preds, average=None)
+    bacc = balanced_accuracy_score(targets, preds)
+    
+    fpr, tpr, _ = roc_curve(targets, preds)
+    roc_auc = auc(fpr, tpr)
+    
+    results = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    results['confusion_matrix'] = cm
+    results['f1_score'] = f1
+    results['precision'] = precision
+    results['recall'] = recall
+    results['bacc'] = bacc
+    results['auc'] = roc_auc
+    results['fpr'] = fpr
+    results['tpr'] = tpr
+    
+    return results
 
 
 @torch.no_grad()
@@ -160,8 +194,8 @@ def visualize_mask(data_loader, model, device, output_dir, n_visualization, fuse
 
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Visualize:'
-    rank = torch.distributed.get_rank()
-    world_size = torch.distributed.get_world_size()
+    rank = 0
+    world_size = 0
     mean = torch.tensor(IMAGENET_DEFAULT_MEAN, device=device).reshape(3, 1, 1)
     std = torch.tensor(IMAGENET_DEFAULT_STD, device=device).reshape(3, 1, 1)
 
@@ -178,7 +212,7 @@ def visualize_mask(data_loader, model, device, output_dir, n_visualization, fuse
             output, idx = model(images, keep_rate, get_idx=True)
             loss = criterion(output, target)
 
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
 
         # denormalize
         images = images * std + mean
