@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-
 class DistillationLoss(torch.nn.Module):
     """
     This module wraps a standard criterion and adds an extra knowledge distillation loss by

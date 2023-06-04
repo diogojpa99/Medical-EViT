@@ -18,6 +18,8 @@ import torch.distributed as dist
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
+from collections import Counter
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -79,7 +81,6 @@ class SmoothedValue(object):
             global_avg=self.global_avg,
             max=self.max,
             value=self.value)
-
 
 class MetricLogger(object):
     def __init__(self, delimiter="\t"):
@@ -162,7 +163,6 @@ class MetricLogger(object):
         print('{} Total time: {} ({:.4f} s / it)'.format(
             header, total_time_str, total_time / len(iterable)))
 
-
 def _load_checkpoint_for_ema(model_ema, checkpoint):
     """
     Workaround for ModelEma._load_checkpoint to accept an already-loaded object
@@ -171,8 +171,7 @@ def _load_checkpoint_for_ema(model_ema, checkpoint):
     torch.save(checkpoint, mem_file)
     mem_file.seek(0)
     model_ema._load_checkpoint(mem_file)
-
-
+    
 def setup_for_distributed(is_master):
     """
     This function disables printing when not in master process
@@ -187,7 +186,6 @@ def setup_for_distributed(is_master):
 
     __builtin__.print = print
 
-
 def is_dist_avail_and_initialized():
     if not dist.is_available():
         return False
@@ -195,27 +193,22 @@ def is_dist_avail_and_initialized():
         return False
     return True
 
-
 def get_world_size():
     if not is_dist_avail_and_initialized():
         return 1
     return dist.get_world_size()
-
 
 def get_rank():
     if not is_dist_avail_and_initialized():
         return 0
     return dist.get_rank()
 
-
 def is_main_process():
     return get_rank() == 0
-
 
 def save_on_master(*args, **kwargs):
     if is_main_process():
         torch.save(*args, **kwargs)
-
 
 def init_distributed_mode(args):
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
@@ -240,8 +233,7 @@ def init_distributed_mode(args):
                                          world_size=args.world_size, rank=args.rank)
     torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
-
-
+    
 class CosineCycle:
     def __init__(self, n_splits, min_v, max_v):
         self.n_splits = n_splits
@@ -264,16 +256,119 @@ class CosineCycle:
             self.n += 1
         return self.values[m]
 
-####################### New #############################
+## New
 
-def plot_confusion_matrix(confusion_matrix, class_names, output_dir):
+def Are_All_Strings_Same(lst):
+    if len(lst) == 0:
+        print("-> List is empty")
+        return True
+    first_string = lst[0]
+    return all(string == first_string for string in lst)
+
+def Class_Weighting(train_set, val_set, device, args):
+    
+    # Check the distribution of the dataset
+    train_dist = dict(Counter(train_set.targets))
+    val_dist = dict(Counter(val_set.targets))
+    
+    train_dist['MEL'] = train_dist.pop(0)
+    train_dist['NV'] = train_dist.pop(1)
+    val_dist['MEL'] = val_dist.pop(0)
+    val_dist['NV'] = val_dist.pop(1)
+    
+    n_train_samples = len(train_set)
+    
+    print(f"Classes: {train_set.classes}\n")
+    print(f"Classes map: {train_set.class_to_idx}\n")
+    print(f"Train distribution: {train_dist}\n")
+    print(f"Val distribution: {val_dist}\n")
+    
+    if args.class_weights:
+        if args.class_weights_type == 'Median':
+            class_weight = torch.Tensor([n_train_samples/train_dist['MEL'], 
+                                         n_train_samples/ train_dist['NV']]).to(device)
+        elif args.class_weights_type == 'Manual':                   
+            class_weight = torch.Tensor([n_train_samples/(2*train_dist['MEL']), 
+                                         n_train_samples/(2*train_dist['NV'])]).to(device)
+    else: 
+        class_weight = None
+    
+    print(f"Class weights: {class_weight}\n")
+    
+    return class_weight
+  
+def plot_loss_and_acc_curves(results_train, results_val, output_dir, args):
+    """Plots training curves of a results dictionary.
+    Args:
+        results (dict): dictionary containing list of values, e.g.
+            {"train_loss": [...],
+             "train_acc": [...],
+             "val_loss": [...],
+             "val_acc": [...]}
+    """
+    train_loss = results_train['loss']
+    val_loss = results_val['loss']
+
+    train_acc = results_train['acc']
+    val_acc = results_val['acc']
+
+    epochs = range(len(results_val['loss']))
+    
+    """ window_size = 1 # Adjust the window size as needed
+    val_loss_smooth = np.convolve(val_loss, np.ones(window_size) / window_size, mode='valid')
+    val_acc_smooth = np.convolve(val_acc, np.ones(window_size) / window_size, mode='valid')
+    epochs_smooth = range(len(val_loss_smooth)) """
+    #plt.figure(figsize=(15, 7))
+    fig, axs = plt.subplots(2, 1)
+
+    # Plot the original image
+    axs[0].plot(epochs, train_loss, label="Train Loss")
+    axs[0].plot(epochs, val_loss, label="Val. Loss")
+    #axs[0].plot(epochs_smooth, val_loss_smooth, label="Val. Loss")
+    axs[0].set_title("Loss")
+    axs[0].set_xlabel("Epochs")
+    axs[0].legend()
+    
+    axs[1].plot(epochs, train_acc, label="Train Acc.")
+    axs[1].plot(epochs, val_acc, label="Val Acc.")
+    #axs[1].plot(epochs_smooth, val_acc_smooth, label="Val. Acc.")
+    axs[1].set_title("Accuracy")
+    axs[1].set_xlabel("Epochs")
+    axs[1].legend()
+    
+    plt.subplots_adjust(wspace=2, hspace=0.6)
+
+    # Plot loss
+    """ plt.subplot(1, 2, 1)
+    plt.plot(epochs, train_loss, label="Train Loss")
+    plt.plot(epochs_smooth, val_loss_smooth, label="Val. Loss")
+    plt.title("Loss")
+    plt.xlabel("Epochs")
+    plt.legend()
+
+    # Plot accuracy
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, train_acc, label="Train Acc.")
+    plt.plot(epochs_smooth, val_acc_smooth, label="Val. Acc.")
+    plt.title("Accuracy")
+    plt.xlabel("Epochs")
+    plt.legend() """
+    
+    # Save the figure
+    plt.savefig(str(output_dir) + '/loss_curves.png')
+    plt.clf()
+    
+def plot_confusion_matrix(confusion_matrix, class_names, output_dir, args):
+    
     df_cm = pd.DataFrame(confusion_matrix, index=class_names, columns=class_names).astype(int)
     heatmap = sns.heatmap(df_cm, annot=True, fmt="d")
     heatmap.yaxis.set_ticklabels(heatmap.yaxis.get_ticklabels(), rotation=0, ha='right',fontsize=15)
     heatmap.xaxis.set_ticklabels(heatmap.xaxis.get_ticklabels(), rotation=45, ha='right',fontsize=15)
+    
     plt.ylabel('True label')
     plt.xlabel('Predicted label')
     plt.savefig(str(output_dir) + '/confusion_matrix.png', dpi=300, bbox_inches='tight')
+    plt.clf()
 
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
@@ -293,7 +388,7 @@ def plot_loss_curves(results, output_dir):
             }
     """
     loss = results["train_loss"]
-    test_loss = results["test_loss"]
+    val_loss = results["test_loss"]
     
     epochs = range(len(results["train_loss"]))
     
@@ -301,7 +396,7 @@ def plot_loss_curves(results, output_dir):
 
     # Plot loss
     ax.plot(epochs, loss, label="train_loss")
-    ax.plot(epochs, test_loss, label="test_loss")
+    ax.plot(epochs, val_loss, label="val_loss")
     ax.set_title("Loss")
     ax.set_xlabel("Epochs")
     ax.legend()
@@ -309,6 +404,7 @@ def plot_loss_curves(results, output_dir):
     # Save the figure
     fig.savefig(str(output_dir) + '/train_test_loss.png')
     
+    plt.clf()
     
 def plot_roc_curve(fpr, tpr, roc_auc, output_dir):
     

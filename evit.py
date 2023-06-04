@@ -37,7 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
-from timm.models.helpers import build_model_with_cfg, named_apply, adapt_input_conv
+from timm.models.helpers import build_model_with_cfg,named_apply, adapt_input_conv
 from timm.models.layers import trunc_normal_, lecun_normal_, to_2tuple
 from timm.models.registry import register_model
 
@@ -117,7 +117,6 @@ def drop_path(x, drop_prob: float = 0., training: bool = False):
     output = x.div(keep_prob) * random_tensor
     return output
 
-
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
     """
@@ -127,7 +126,6 @@ class DropPath(nn.Module):
 
     def forward(self, x):
         return drop_path(x, self.drop_prob, self.training)
-
 
 class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
@@ -148,7 +146,6 @@ class Mlp(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
-
 
 class PatchEmbed(nn.Module):
     """ 2D Image to Patch Embedding
@@ -174,7 +171,6 @@ class PatchEmbed(nn.Module):
         x = self.norm(x)
         return x
 
-
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0., keep_rate=1.):
         super().__init__()
@@ -187,8 +183,25 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
         self.keep_rate = keep_rate
-        assert 0 < keep_rate <= 1, "keep_rate must > 0 and <= 1, got {0}".format(keep_rate)
+        
+        # New 
+        self.attn = None
+        self.attn_gradients = None
 
+        assert 0 < keep_rate <= 1, "keep_rate must > 0 and <= 1, got {0}".format(keep_rate)
+        
+    def get_attn(self):
+        return self.attn
+    
+    def save_attn(self, attn):
+        self.attn = attn
+        
+    def save_attn_gradients(self, attn_gradients):
+            self.attn_gradients = attn_gradients
+
+    def get_attn_gradients(self):
+        return self.attn_gradients
+    
     def forward(self, x, keep_rate=None, tokens=None):
         if keep_rate is None:
             keep_rate = self.keep_rate
@@ -199,11 +212,16 @@ class Attention(nn.Module):
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
+        
+        # New
+        self.save_attn(attn)
+        if attn.requires_grad == True:
+            attn.register_hook(self.save_attn_gradients)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-
+        
         left_tokens = N - 1
         if self.keep_rate < 1 and keep_rate < 1 or tokens is not None:  # double check the keep rate
             left_tokens = math.ceil(keep_rate * (N - 1))
@@ -223,7 +241,6 @@ class Attention(nn.Module):
 
         return  x, None, None, None, left_tokens
 
-
 class Block(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
@@ -234,7 +251,7 @@ class Block(nn.Module):
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias,
                               attn_drop=attn_drop, proj_drop=drop, keep_rate=keep_rate)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity() # nn.Dropout(drop_path)
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
@@ -270,7 +287,6 @@ class Block(nn.Module):
         if get_idx and index is not None:
             return x, n_tokens, idx
         return x, n_tokens, None
-
 
 class EViT(nn.Module):
     """ EViT """
@@ -351,7 +367,20 @@ class EViT(nn.Module):
             self.head_dist = nn.Linear(self.embed_dim, self.num_classes) if num_classes > 0 else nn.Identity()
 
         self.init_weights(weight_init)
+        
+        self.left_tokens = None
+        self.gradients = None
 
+    def activations_hook(self, grad):
+        self.gradients = grad
+        
+    def get_activations_gradient(self):
+        return self.gradients
+    
+    def get_activations(self, x, keep_rate=None, tokens=None, get_idx=False, grad_cam=True):
+        return self.forward_features(x, keep_rate, tokens, get_idx, grad_cam)
+        #return self.blocks(x, keep_rate, tokens, get_idx)
+    
     def init_weights(self, mode=''):
         assert mode in ('jax', 'jax_nlhb', 'nlhb', '')
         head_bias = -math.log(self.num_classes) if 'nlhb' in mode else 0.
@@ -393,7 +422,7 @@ class EViT(nn.Module):
     def name(self):
         return "EViT"
 
-    def forward_features(self, x, keep_rate=None, tokens=None, get_idx=False):
+    def forward_features(self, x, keep_rate=None, tokens=None, get_idx=False, grad_cam=False):
         _, _, h, w = x.shape
         if not isinstance(keep_rate, (tuple, list)):
             keep_rate = (keep_rate, ) * self.depth
@@ -426,18 +455,28 @@ class EViT(nn.Module):
         left_tokens = []
         idxs = []
         for i, blk in enumerate(self.blocks):
-            x, left_token, idx = blk(x, keep_rate[i], tokens[i], get_idx)
+            x, left_token, idx = blk(x, keep_rate[i], tokens[i], get_idx) # Here shouldn't be self.keep_rate[i] ? No! See line 204
             left_tokens.append(left_token)
             if idx is not None:
                 idxs.append(idx)
         x = self.norm(x)
+        
+        # Register Hook
+        if x.requires_grad == True:
+            x.register_hook(self.activations_hook) 
+        if grad_cam:
+            return x
+
         if self.dist_token is None:
             return self.pre_logits(x[:, 0]), left_tokens, idxs
         else:
             return x[:, 0], x[:, 1], idxs
 
     def forward(self, x, keep_rate=None, tokens=None, get_idx=False):
-        x, _, idxs = self.forward_features(x, keep_rate, tokens, get_idx)
+        x, left_tokens, idxs = self.forward_features(x, keep_rate, tokens, get_idx)
+        
+        self.left_tokens = left_tokens
+        
         if self.head_dist is not None:
             x, x_dist = self.head(x[0]), self.head_dist(x[1])  # x must be a tuple
             if self.training and not torch.jit.is_scripting():
@@ -624,13 +663,12 @@ def _create_evit(variant, pretrained=False, default_cfg=None, **kwargs):
         _logger.warning("Removing representation layer for fine-tuning.")
         repr_size = None
 
-    model = build_model_with_cfg(
-        EViT, variant, pretrained,
-        default_cfg=default_cfg,
-        representation_size=repr_size,
-        pretrained_filter_fn=checkpoint_filter_fn,
-        pretrained_custom_load='npz' in default_cfg['url'],
-        **kwargs)
+    model = build_model_with_cfg(model_cls=EViT, 
+                                 variant=variant, 
+                                 pretrained=pretrained,
+                                 representation_size=repr_size,
+                                 pretrained_filter_fn=checkpoint_filter_fn,
+                                 **kwargs)
     return model
 
 

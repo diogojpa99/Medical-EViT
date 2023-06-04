@@ -218,3 +218,15 @@ events.out.tfevents*
 
 # vim
 .vim
+
+# wandb
+wandb/
+
+# Finetuned_Models
+Finetuned_Models/
+
+# Pretrained_Models
+Pretrained_Models/
+
+# rollout
+rollout/

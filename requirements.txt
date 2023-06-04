@@ -1,8 +1,10 @@
-torch==1.9.0
-torchvision==0.10.0
-timm==0.4.12
-tensorboardX==2.4
+torch==2.0.1
+torchvision==0.15.2
+timm==0.9.1
 torchprofile==0.0.4
-lmdb==1.2.1
-pyarrow==5.0.0
-einops==0.4.1
+torchinfo==1.7.2
+lmdb==1.4.1
+einops==0.6.1
+wandb==0.15.3
+matplotlib==3.7.1
+pyarrow==12.0.0

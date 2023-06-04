@@ -27,13 +27,13 @@ from timm.scheduler import create_scheduler
 from timm.optim import create_optimizer
 from timm.utils import NativeScaler, get_state_dict, ModelEma
 
-from datasets import build_dataset
+""" from datasets import build_dataset
 from engine import train_one_epoch, evaluate, visualize_mask
 from losses import DistillationLoss
 from samplers import RASampler
 import models
 import utils
-from helpers import speed_test, get_macs
+from helpers import speed_test, get_macs """
 
 from PIL import Image
 
@@ -190,14 +190,15 @@ def deit_tiny_patch16_224(pretrained=False, **kwargs):
 def vit_tiny(pretrained=True, **kwargs):
     
     model = evit.EViT(
-        patch_size=16, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4, qkv_bias=True,
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, qkv_bias=True,
         norm_layer=evit.partial(torch.nn.LayerNorm, eps=1e-6), **kwargs)
     model.default_cfg = evit._cfg()
     
     if pretrained:
-        model.load_state_dict(torch.load("model_vit.pth",map_location="cpu"))
+        model.load_state_dict(torch.load("evit-0.7-fuse-img224-deit-s.pth",map_location="cpu"))
     
-    return model
+    return 
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
@@ -364,7 +365,7 @@ def get_args_parser():
 
 def main(args):
 
-    utils.init_distributed_mode(args)
+    #utils.init_distributed_mode(args)
 
     print(args)
 
@@ -391,7 +392,8 @@ def main(args):
     
     #model = deit_tiny_patch16_224(pretrained=True)
 
-    model =vit_tiny(True)
+    #model =vit_tiny(True)
+    model = evit.deit_small_patch16_224(pretrained=True)
     #checkpoint = torch.hub.load_state_dict_from_url(args.finetune, map_location='cpu', check_hash=True)
 
     #checkpoint = torch.load(args.finetune, map_location='cpu')
@@ -435,7 +437,7 @@ def main(args):
         normalize,
     ])
     
-    image = Image.open("ISIC_0000013.jpg")
+    """ image = Image.open("ISIC_0000013.jpg")
     tensor = transform(image)
     #convert_tensor = transforms.ToTensor()
 
@@ -444,7 +446,7 @@ def main(args):
     
     rollout=generate_visualization(tensor,model,head_fusion="mean",discard_ratio=0)
     
-    cv2.imwrite("rollout.jpg", rollout)
+    cv2.imwrite("rollout.jpg", rollout) """
     
     fig, axs = plt.subplots(4, 9,figsize=(20, 10))
     

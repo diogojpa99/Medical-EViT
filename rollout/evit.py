@@ -193,7 +193,7 @@ class Attention(nn.Module):
         self.attn_gradients = None
 
         assert 0 < keep_rate <= 1, "keep_rate must > 0 and <= 1, got {0}".format(keep_rate)
-        
+            
     def get_attn(self):
         return self.attn
     
@@ -650,13 +650,12 @@ def _create_evit(variant, pretrained=False, default_cfg=None, **kwargs):
         _logger.warning("Removing representation layer for fine-tuning.")
         repr_size = None
 
-    model = build_model_with_cfg(
-        EViT, variant, pretrained,
-        default_cfg=default_cfg,
-        representation_size=repr_size,
-        pretrained_filter_fn=checkpoint_filter_fn,
-        pretrained_custom_load='npz' in default_cfg['url'],
-        **kwargs)
+    model = build_model_with_cfg(model_cls=EViT, 
+                                 variant=variant, 
+                                 pretrained=pretrained,
+                                 representation_size=repr_size,
+                                 pretrained_filter_fn=checkpoint_filter_fn,
+                                 **kwargs)
     return model
 
 

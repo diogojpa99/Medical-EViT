@@ -12,7 +12,6 @@ from typing import Iterable, Optional
 
 import torch
 
-from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
 
 from losses import DistillationLoss
@@ -22,138 +21,220 @@ from helpers import adjust_keep_rate
 from visualize_mask import get_real_idx, mask, save_img_batch
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score, balanced_accuracy_score, roc_curve, auc
+from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score, balanced_accuracy_score,\
+    roc_curve, auc, roc_auc_score
 
 import numpy as np
+import matplotlib.pyplot as plt
 
-
-def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
-                    data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
-                    model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None,
-                    writer=None,
-                    set_training_mode=True,
-                    args=None):
+def train_one_epoch(model: torch.nn.Module, 
+                criterion: torch.nn.Module,
+                data_loader: Iterable, 
+                optimizer: torch.optim.Optimizer,
+                device: torch.device, 
+                epoch: int, 
+                loss_scaler, 
+                max_norm: float = 0,
+                lr_scheduler=None,
+                model_ema: Optional[ModelEma] = None,
+                set_training_mode=True,
+                wandb=print,
+                args=None):
     
+    # Put model in train mode
     model.train(set_training_mode)
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    header = 'Epoch: [{}]'.format(epoch)
-    print_freq = 200
-    log_interval = 100
-    it = epoch * len(data_loader)
+
+    # Setup train loss and train accuracy values
+    train_loss, train_acc = 0, 0
+    train_stats = {}
+    
+    # Evit Parameters
     ITERS_PER_EPOCH = len(data_loader)
-
     base_rate = args.base_keep_rate
+    lr_num_updates = it = epoch * len(data_loader)
 
-    for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
-        samples = samples.to(device, non_blocking=True)
-        targets = targets.to(device, non_blocking=True)
-
+    # Loop through data loader data batches
+    for batch_idx, (inputs, labels) in enumerate(data_loader):
+        
+        # Send data to target device
+        inputs, labels = inputs.to(device,non_blocking=True), labels.to(device,non_blocking=True)
+        
+        # Compute keep rate
         keep_rate = adjust_keep_rate(it, epoch, warmup_epochs=args.shrink_start_epoch,
                                          total_epochs=args.shrink_start_epoch + args.shrink_epochs,
                                          ITERS_PER_EPOCH=ITERS_PER_EPOCH, base_keep_rate=base_rate)
 
-        if mixup_fn is not None:
-            samples, targets = mixup_fn(samples, targets)
-
-        with torch.cuda.amp.autocast():
-            outputs = model(samples, keep_rate)
-            loss = criterion(samples, outputs, targets)
-
-        loss_value = loss.item()
-
-        if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
-            sys.exit(1)
-
+        # 1. Clear gradients
         optimizer.zero_grad()
 
-        # this attribute is added by timm on one optimizer (adahessian)
-        is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
-        loss_scaler(loss, optimizer, clip_grad=max_norm,
-                    parameters=model.parameters(), create_graph=is_second_order)
+        # 2. Forward pass
+        with torch.cuda.amp.autocast():
+            scores = model(inputs, keep_rate)
+            loss = criterion(scores, labels)
+            
+        train_loss += loss.item() 
+        if not math.isfinite(train_loss):
+            print("Loss is {}, stopping training".format(train_loss))
+            sys.exit(1)
 
-        torch.cuda.synchronize()
+        if loss_scaler is not None:
+            # this attribute is added by timm on one optimizer (adahessian)
+            is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
+            loss_scaler(loss, optimizer, clip_grad=max_norm,
+                        parameters=model.parameters(), create_graph=is_second_order)
+        else:
+            loss.backward() # 3. Backward pass
+            if max_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm) # 4. Clip gradients
+            optimizer.step() # 5. Update weights
+
+        # Update LR Scheduler
+        if not args.cosine_one_cycle:
+            lr_scheduler.step_update(num_updates=lr_num_updates)
+        
+        # Update Model Ema
         if model_ema is not None:
+            if device == 'cuda:0' or device == 'cuda:1':
+                torch.cuda.synchronize()
             model_ema.update(model)
 
-        metric_logger.update(loss=loss_value)
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-
-        #if torch.distributed.get_rank() == 0 and it % log_interval == 0:
-        writer.add_scalar('loss', loss_value, it)
-        writer.add_scalar('lr', optimizer.param_groups[0]["lr"], it)
-        writer.add_scalar('keep_rate', keep_rate, it)
+        # Calculate and accumulate accuracy metric across all batches
+        predictions = torch.argmax(torch.softmax(scores, dim=1), dim=1)
+        train_acc += (predictions == labels).sum().item()/len(scores)
+        
         it += 1
+        
+        #left_tokens = model.left_tokens
+        train_stats['keep_rate'] = keep_rate
+        train_stats['left_tokens'] = model.left_tokens
 
-    # gather the stats from all processes
-    metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, keep_rate
 
+    # Adjust metrics to get average loss and accuracy per batch 
+    train_loss = train_loss / len(data_loader)
+    train_acc = train_acc / len(data_loader)
+
+    train_stats['train_loss'] = train_loss
+    train_stats['train_acc'] = train_acc
+    train_stats['train_lr'] = optimizer.param_groups[0]['lr']
+    
+    if wandb != print:
+        wandb.log({"Keep Rate":keep_rate}, step=epoch)
+        wandb.log({"Train Loss":train_loss} ,step=epoch)
+        wandb.log({"Train Accuracy":train_acc}, step=epoch)
+        wandb.log({"Train LR":optimizer.param_groups[0]['lr']}, step=epoch)
+    
+    return train_stats,keep_rate
 
 @torch.no_grad()
-def evaluate(data_loader, model, device, keep_rate=None):
-    criterion = torch.nn.CrossEntropyLoss()
-
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    header = 'Test:'
+def evaluate(model: torch.nn.Module, 
+               dataloader: torch.utils.data.DataLoader, 
+               keep_rate: None,
+               criterion: torch.nn.Module, 
+               device: torch.device,
+               epoch: int,
+               wandb=print,
+               args=None):
+    
+    #criterion = torch.nn.CrossEntropyLoss()
 
     # Switch to evaluation mode
     model.eval()
     
     preds = []
     targets = []
+    test_loss, test_acc = 0, 0
+    results = {}
     
-    for images, target in metric_logger.log_every(data_loader, 10, header):
-        images = images.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+    for inputs, targets_ in dataloader:
+        
+        inputs, targets_ = inputs.to(device, non_blocking=True), targets_.to(device, non_blocking=True)
 
         # Compute output
         with torch.cuda.amp.autocast():
-            output = model(images)
-            loss = criterion(output, target)
-
-        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            scores = model(inputs, keep_rate)
+            loss = criterion(scores, targets_)
         
-        preds.append(output.argmax(dim=1).cpu().numpy())
-        targets.append(target.cpu().numpy())
-
-        batch_size = images.shape[0]
-        metric_logger.update(loss=loss.item())
-        metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
-        metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
+        test_loss += loss.item()
+    
+        # Calculate and accumulate accuracy
+        predictions = scores.argmax(dim=1)
+        test_acc += ((predictions == targets_).sum().item()/len(predictions))
         
-    # Gather the stats from all processes
-    metric_logger.synchronize_between_processes()
-    print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
-          .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
+        preds.append(predictions.cpu().numpy())
+        targets.append(targets_.cpu().numpy())
 
-    # Compute confusion matrix, f1-score, precision, and recall
-    preds = np.concatenate(preds)
-    targets = np.concatenate(targets)
-    cm = confusion_matrix(targets, preds)
-    f1 = f1_score(targets, preds, average=None)
-    precision = precision_score(targets, preds, average=None)
-    recall = recall_score(targets, preds, average=None)
-    bacc = balanced_accuracy_score(targets, preds)
-    
-    fpr, tpr, _ = roc_curve(targets, preds)
-    roc_auc = auc(fpr, tpr)
-    
-    results = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-    results['confusion_matrix'] = cm
-    results['f1_score'] = f1
-    results['precision'] = precision
-    results['recall'] = recall
-    results['bacc'] = bacc
-    results['auc'] = roc_auc
-    results['fpr'] = fpr
-    results['tpr'] = tpr
-    
+    # Adjust metrics to get average loss and accuracy per batch 
+    test_loss = test_loss/len(dataloader)
+    test_acc = test_acc/len(dataloader)
+
+    if wandb!=print:
+        wandb.log({"Val Loss":test_loss},step=epoch)
+        wandb.log({"Val Accuracy":test_acc},step=epoch)
+        
+    # Compute Metrics
+    preds=np.concatenate(preds)
+    targets=np.concatenate(targets)
+    results['confusion_matrix'], results['f1_score'] = confusion_matrix(targets, preds), f1_score(targets, preds, average=None) 
+    results['precision'], results['recall'] = precision_score(targets, preds, average=None), recall_score(targets, preds, average=None)
+    results['bacc'] = balanced_accuracy_score(targets, preds)
+    results['acc1'], results['loss'] = test_acc, test_loss
+
     return results
 
+class EarlyStopping:
+    """Early stops the training if validation loss doesn't improve after a given patience."""
+    def __init__(self, patience=7, verbose=False, delta=0, path='checkpoint.pt', trace_func=print):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+                            Default: 7
+            verbose (bool): If True, prints a message for each validation loss improvement. 
+                            Default: False
+            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
+                            Default: 0
+            path (str): Path for the checkpoint to be saved to.
+                            Default: 'checkpoint.pt'
+            trace_func (function): trace print function.
+                            Default: print            
+        """
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+        self.delta = delta
+        self.path = path
+        self.trace_func = trace_func
+        
+    def __call__(self, val_loss, model):
+
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            
+        elif score < self.best_score + self.delta:
+            # If we don't have an improvement, increase the counter 
+            self.counter += 1
+            #self.trace_func(f'\tEarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            # If we have an imporvement, save the model
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+    
+    def save_checkpoint(self, val_loss, model):
+        '''Saves model when validation loss decrease.'''
+        if self.verbose:
+            self.trace_func(f'\tValidation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).')
+            
+        #torch.save(model.state_dict(), self.path)
+        self.val_loss_min = val_loss
+        
 
 @torch.no_grad()
 def get_acc(data_loader, model, device, keep_rate=None, tokens=None):

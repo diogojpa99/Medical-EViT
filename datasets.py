@@ -59,7 +59,6 @@ class INatDataset(ImageFolder):
 
     # __getitem__ and __len__ inherited from ImageFolder
 
-
 def build_dataset(is_train, args):
     transform = build_transform(is_train, args)
 
@@ -86,11 +85,8 @@ def build_dataset(is_train, args):
                               category=args.inat_category, transform=transform)
         nb_classes = dataset.nb_classes
         
-    if args.custom_class:
-        nb_classes = len(torch.unique(torch.tensor(dataset.targets)))
-
+    nb_classes = len(dataset.classes)
     return dataset, nb_classes
-
 
 def build_transform(is_train, args):
     resize_im = args.input_size > 32
@@ -124,3 +120,17 @@ def build_transform(is_train, args):
     t.append(transforms.ToTensor())
     t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
     return transforms.Compose(t)
+
+def build_dataset_simple(is_train, args):
+        
+    transform = transforms.Compose(
+    [   transforms.Resize(size=(224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD)
+    ])
+    
+    root = os.path.join(args.data_path, 'train' if is_train else 'val')
+    dataset = datasets.ImageFolder(root, transform=transform)
+    nb_classes = len(dataset.classes)
+    
+    return dataset, nb_classes

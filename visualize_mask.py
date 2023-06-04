@@ -13,12 +13,12 @@ def mask(x, idx, patch_size):
         out_img: masked image with only patches from idx postions
     """
     h = x.size(2) // patch_size
-    x = rearrange(x, 'b c (h p) (w q) -> b (c p q) (h w)', p=patch_size, q=patch_size)
+    x = rearrange(x, 'b c (h p) (w q) -> b (c p q) (h w)', p=patch_size, q=patch_size) # [B, (C * patch_size * patch_size), (h * w)]
     output = torch.zeros_like(x)
-    idx1 = idx.unsqueeze(1).expand(-1, x.size(1), -1)
-    extracted = torch.gather(x, dim=2, index=idx1)  # [b, c p q, T]
-    scattered = torch.scatter(output, dim=2, index=idx1, src=extracted)
-    out_img = rearrange(scattered, 'b (c p q) (h w) -> b c (h p) (w q)', p=patch_size, q=patch_size, h=h)
+    idx1 = idx.unsqueeze(1).expand(-1, x.size(1), -1) # [B, C * patch_size * patch_size, T] (T is the number of attenttive patches)
+    extracted = torch.gather(x, dim=2, index=idx1)  # [b, c p q, T] -> Extraxt the attentive patches from x given the idx1
+    scattered = torch.scatter(output, dim=2, index=idx1, src=extracted) # Here we obtain the masked image
+    out_img = rearrange(scattered, 'b (c p q) (h w) -> b c (h p) (w q)', p=patch_size, q=patch_size, h=h) # Reshape the masked image to the original shape
     return out_img
 
 
