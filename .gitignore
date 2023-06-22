@@ -229,4 +229,7 @@ Finetuned_Models/
 Pretrained_Models/
 
 # rollout
-rollout/
+Rollout/
+
+# Bash scripts
+BashScripts/

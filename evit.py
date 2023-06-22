@@ -206,10 +206,12 @@ class Attention(nn.Module):
         if keep_rate is None:
             keep_rate = self.keep_rate
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4) # (N,D) \dot (D,D') = (N,D')
+        
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = (q @ k.transpose(-2, -1)) * self.scale # (N,D') \dot (D',N) = (N,N)
+        
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
         
