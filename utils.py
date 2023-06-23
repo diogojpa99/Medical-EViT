@@ -258,6 +258,60 @@ class CosineCycle:
 
 ## New
 
+def Load_Pretrained_Model(model, optimizer, lr_scheduler, loss_scaler, model_ema, args):
+    
+    if args.resume.startswith('https'):
+        checkpoint = torch.hub.load_state_dict_from_url(
+            args.resume, map_location='cpu', check_hash=True)
+    else:
+        checkpoint = torch.load(args.resume, map_location='cpu')
+        
+    #model_without_ddp.load_state_dict(checkpoint['model'])
+    model.load_state_dict(checkpoint['model'])
+    
+    if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        args.start_epoch = checkpoint['epoch'] + 1
+        if args.model_ema:
+            _load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
+        if 'scaler' in checkpoint:
+            loss_scaler.load_state_dict(checkpoint['scaler'])
+            
+def Load_Pretrained_Model_Finetuning(model, args):
+    
+    print("***** Importing model for finetuning. ******\n")
+    if args.finetune.startswith('https'):
+        checkpoint = torch.hub.load_state_dict_from_url(
+            args.finetune, map_location='cpu', check_hash=True)
+    else:
+        checkpoint = torch.load(args.finetune, map_location='cpu')
+
+    checkpoint_model = checkpoint['model']
+    state_dict = model.state_dict()
+    for k in ['head.weight', 'head.bias', 'head_dist.weight', 'head_dist.bias']:
+        if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
+            print(f"Removing key {k} from pretrained checkpoint")
+            del checkpoint_model[k]
+
+    # Interpolate position embedding
+    pos_embed_checkpoint = checkpoint_model['pos_embed']
+    embedding_size = pos_embed_checkpoint.shape[-1]
+    num_patches = model.patch_embed.num_patches
+    num_extra_tokens = model.pos_embed.shape[-2] - num_patches # height (== width) for the checkpoint position embedding
+    orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5) # height (== width) for the new position embedding
+    new_size = int(num_patches ** 0.5) # class_token and dist_token are kept unchanged
+    extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens] # only the position tokens are interpolated
+    pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
+    pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
+    pos_tokens = torch.nn.functional.interpolate(
+        pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
+    pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
+    new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
+    checkpoint_model['pos_embed'] = new_pos_embed
+
+    model.load_state_dict(checkpoint_model, strict=False)
+            
 def Are_All_Strings_Same(lst):
     if len(lst) == 0:
         print("-> List is empty")

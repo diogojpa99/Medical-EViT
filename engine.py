@@ -47,7 +47,8 @@ def train_one_epoch(model: torch.nn.Module,
     # Setup train loss and train accuracy values
     train_loss, train_acc = 0, 0
     train_stats = {}
-    
+    preds = []; targs = []
+
     # Evit Parameters
     ITERS_PER_EPOCH = len(data_loader)
     base_rate = args.base_keep_rate
@@ -84,8 +85,10 @@ def train_one_epoch(model: torch.nn.Module,
                         parameters=model.parameters(), create_graph=is_second_order)
         else:
             loss.backward() # 3. Backward pass
+            
             if max_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm) # 4. Clip gradients
+                
             optimizer.step() # 5. Update weights
 
         # Update LR Scheduler
@@ -101,6 +104,8 @@ def train_one_epoch(model: torch.nn.Module,
         # Calculate and accumulate accuracy metric across all batches
         predictions = torch.argmax(torch.softmax(scores, dim=1), dim=1)
         train_acc += (predictions == labels).sum().item()/len(scores)
+
+        preds.append(predictions.cpu().numpy()); targs.append(labels.cpu().numpy())
         
         it += 1
         
@@ -122,21 +127,26 @@ def train_one_epoch(model: torch.nn.Module,
         wandb.log({"Train Loss":train_loss} ,step=epoch)
         wandb.log({"Train Accuracy":train_acc}, step=epoch)
         wandb.log({"Train LR":optimizer.param_groups[0]['lr']}, step=epoch)
+        
+    # Compute Metrics
+    preds=np.concatenate(preds); targs=np.concatenate(targs)
+    train_stats['confusion_matrix'], train_stats['f1_score'] = confusion_matrix(targs, preds), f1_score(targs, preds, average=None) 
+    train_stats['precision'], train_stats['recall'] = precision_score(targs, preds, average=None), recall_score(targs, preds, average=None)
+    train_stats['bacc'] = balanced_accuracy_score(targs, preds)
+    train_stats['acc1'], train_stats['loss'] = train_acc, train_loss
     
-    return train_stats,keep_rate
+    return train_stats, keep_rate
 
 @torch.no_grad()
 def evaluate(model: torch.nn.Module, 
-               dataloader: torch.utils.data.DataLoader, 
-               keep_rate: None,
-               criterion: torch.nn.Module, 
-               device: torch.device,
-               epoch: int,
-               wandb=print,
-               args=None):
+            dataloader: torch.utils.data.DataLoader, 
+            keep_rate: None,
+            criterion: torch.nn.Module, 
+            device: torch.device,
+            epoch: int,
+            wandb=print,
+            args=None):
     
-    #criterion = torch.nn.CrossEntropyLoss()
-
     # Switch to evaluation mode
     model.eval()
     

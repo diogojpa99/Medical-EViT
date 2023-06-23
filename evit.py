@@ -184,7 +184,6 @@ class Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
         self.keep_rate = keep_rate
         
-        # New 
         self.attn = None
         self.attn_gradients = None
 
@@ -203,19 +202,18 @@ class Attention(nn.Module):
         return self.attn_gradients
     
     def forward(self, x, keep_rate=None, tokens=None):
+        
         if keep_rate is None:
             keep_rate = self.keep_rate
+        
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4) # (N,D) \dot (D,D') = (N,D')
-        
         q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
-
-        attn = (q @ k.transpose(-2, -1)) * self.scale # (N,D') \dot (D',N) = (N,N)
         
+        attn = (q @ k.transpose(-2, -1)) * self.scale # (N,D') \dot (D',N) = (N,N)
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
         
-        # New
         self.save_attn(attn)
         if attn.requires_grad == True:
             attn.register_hook(self.save_attn_gradients)
@@ -226,17 +224,18 @@ class Attention(nn.Module):
         
         left_tokens = N - 1
         if self.keep_rate < 1 and keep_rate < 1 or tokens is not None:  # double check the keep rate
+            
             left_tokens = math.ceil(keep_rate * (N - 1))
+            
             if tokens is not None:
                 left_tokens = tokens
             if left_tokens == N - 1:
                 return x, None, None, None, left_tokens
+            
             assert left_tokens >= 1
             cls_attn = attn[:, :, 0, 1:]  # [B, H, N-1]
             cls_attn = cls_attn.mean(dim=1)  # [B, N-1]
             _, idx = torch.topk(cls_attn, left_tokens, dim=1, largest=True, sorted=True)  # [B, left_tokens]
-            # cls_idx = torch.zeros(B, 1, dtype=idx.dtype, device=idx.device)
-            # index = torch.cat([cls_idx, idx + 1], dim=1)
             index = idx.unsqueeze(-1).expand(-1, -1, C)  # [B, left_tokens, C]
 
             return x, index, idx, cls_attn, left_tokens
@@ -371,18 +370,7 @@ class EViT(nn.Module):
         self.init_weights(weight_init)
         
         self.left_tokens = None
-        self.gradients = None
 
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    def get_activations(self, x, keep_rate=None, tokens=None, get_idx=False, grad_cam=True):
-        return self.forward_features(x, keep_rate, tokens, get_idx, grad_cam)
-        #return self.blocks(x, keep_rate, tokens, get_idx)
-    
     def init_weights(self, mode=''):
         assert mode in ('jax', 'jax_nlhb', 'nlhb', '')
         head_bias = -math.log(self.num_classes) if 'nlhb' in mode else 0.
@@ -425,13 +413,16 @@ class EViT(nn.Module):
         return "EViT"
 
     def forward_features(self, x, keep_rate=None, tokens=None, get_idx=False, grad_cam=False):
+        
         _, _, h, w = x.shape
         if not isinstance(keep_rate, (tuple, list)):
             keep_rate = (keep_rate, ) * self.depth
         if not isinstance(tokens, (tuple, list)):
             tokens = (tokens, ) * self.depth
+            
         assert len(keep_rate) == self.depth
         assert len(tokens) == self.depth
+        
         x = self.patch_embed(x)
         cls_token = self.cls_token.expand(x.shape[0], -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         if self.dist_token is None:
@@ -463,12 +454,6 @@ class EViT(nn.Module):
                 idxs.append(idx)
         x = self.norm(x)
         
-        # Register Hook
-        if x.requires_grad == True:
-            x.register_hook(self.activations_hook) 
-        if grad_cam:
-            return x
-
         if self.dist_token is None:
             return self.pre_logits(x[:, 0]), left_tokens, idxs
         else:
