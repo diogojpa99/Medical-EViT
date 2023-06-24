@@ -11,25 +11,56 @@ from torch.utils.data import DataLoader, Subset, ConcatDataset
 import visualize_mask
 
 
-def fix_map(map, idxs, N, device):
-    
-    full_map = torch.zeros((N)).to(device)
-    full_map = full_map + map
-    
-    return full_map
-    
-def Cam_Select_Attn(attn:torch.Tensor):
-    """ 
-    Select the first row of the attention map (the one that corresponds to the CLS token).
-    Then compute the mean of all the attention heads.
+##### Visualization of attention Maps Functions #####
+
+def fix_map(map:torch.Tensor=None, 
+            idxs:torch.Tensor=None, 
+            N:int=196, 
+            device:torch.device=None) -> torch.Tensor:
+    """
+    Evit returns a map only with the attentive tokens. 
+    Hence, we need to fill the rest of the map with zeros.
+
+    Args:
+        map (torch.Tensor): First row of the attention map of the last layer of the model where inattentive tokens were removed.
+        idxs (torch.Tensor): Indices of the attentive tokens on the "N" size map.
+        N (torch.Tensor): Initial number of tokens/patches.
+        device (torch.device): torch.device object.
+
+    Raises:
+        ValueError: map and idxs must have the same length.
+
+    Returns:
+        torch.Tensor: Map with the same size as the original map. Shape: (1, N)
     """
     
+    full_map = torch.zeros((N)).to(device)
+    
+    if len(idxs) != len(map):
+        raise ValueError("The number of indices and the number of elements in the map must be equal.")
+
+    for i in range(len(idxs)):
+        full_map[idxs[i]] = map[i]
+        
+    return full_map
+    
+def Cam_Select_Attn(attn:torch.Tensor) -> torch.Tensor:
+    """
+    Select the first row of the attention map (the one that corresponds to the CLS token).
+    Then compute the mean of all the attention heads.
+
+    Args:
+        attn (torch.Tensor): Attention map. Shape: (1, heads, n_tokens, n_tokens)
+
+    Returns:
+        torch.Tensor: Attention map of the CLS token. Shape: (n_tokens)
+    """
+
     cls_attn = attn[:, :, 0, 1:]
-    #cam = cam.clamp(min=0).mean(dim=1) # Mean of the heads
-    cls_attn = cls_attn.mean(dim=1)
+    cls_attn = cls_attn.clamp(min=0).mean(dim=1) # Mean of the heads
+    #cls_attn = cls_attn.mean(dim=1)
     
     return cls_attn.squeeze(0)
-    
     
 def compute_rollout_attention(all_layer_matrices, start_layer=0):
     
@@ -45,33 +76,36 @@ def compute_rollout_attention(all_layer_matrices, start_layer=0):
         
     return joint_attention
 
-def Gen_Attn_Map(output,
-                 label,
-                 model,
-                 idxs,
-                 method="last_layer_attn",
-                 head_fusion="mean",
-                 discard_ratio=0.9,
-                 device:torch.device=None):
+def Gen_Attn_Map(output:torch.Tensor=None,
+                 label:int=0,
+                 model:torch.nn.Module=None,
+                 idxs:torch.Tensor=None,
+                 method:str="last_layer_attn",
+                 head_fusion:str="mean",
+                 discard_ratio:float=0.9,
+                 device:torch.device=None) -> torch.Tensor:
 
     model.zero_grad()  
     output[:,label].backward(retain_graph=True)
     
-    if method == "rollout":
+    if method == "Rollout":
         attn_cams = []
         for block in model.blocks:
             attn_heads = block.attn.get_attn().clamp(min=0)
+            
             if head_fusion == "mean":
               attention_heads_fused = attn_heads.mean(axis=1) #1,heads, n_tokens,n_tokens 
             elif head_fusion == "max":
                 attention_heads_fused = attn_heads.max(axis=1)[0]
             elif head_fusion == "min":
                 attention_heads_fused = attn_heads.min(axis=1)[0]  
+                
             flat = attention_heads_fused.view(attention_heads_fused.size(0), -1)  #1,(n_tokens*n_tokens) | flat.shape -> 1, (n_tokens*n_tokens)
             _, indices = flat.topk(int(flat.size(-1)*discard_ratio), -1, False) #discard 
             indices = indices[indices != 0]
             flat[0, indices] = 0
             attn_cams.append(attention_heads_fused) #avg of the heads  b,n,n 
+            
         cam = compute_rollout_attention(attn_cams)
         cam = cam[:, 0, 1:] 
     
@@ -86,33 +120,36 @@ def Gen_Attn_Map(output,
         rollout = compute_rollout_attention(cams)
         cam = rollout[:, 0, 1:]
     
-    elif method == "Grad_Rollout_last_layer":
-        grad = model.blocks[-1].attn.get_attn_gradients()
-        cam = model.blocks[-1].attn.get_attn()
-        cam = grad * cam
-        cam = Cam_Select_Attn(cam)
+    elif method == "Grad_Cam_Last_Layer" or method == "Last_Layer_Attn" or method == "Middle_Layer_Attn":
         
-    elif method == "last_layer_cam":
-        cam = model.blocks[-1].attn.get_attn()
-        cam = Cam_Select_Attn(cam)
+        if method == "Grad_Cam_Last_Layer":
+            grad = model.blocks[-1].attn.get_attn_gradients()
+            cam = model.blocks[-1].attn.get_attn()
+            cam = grad * cam
+            cam = Cam_Select_Attn(cam)
+            
+        elif method == "Last_Layer_Attn":
+            cam = model.blocks[-1].attn.get_attn()
+            cam = Cam_Select_Attn(cam)
 
+        
+        elif method == "Middle_Layer_Attn":
+            cam = model.blocks[5].attn.get_attn()
+            cam = Cam_Select_Attn(cam)
+
+        if idxs is not None:
+            cam = fix_map(cam, idxs[-1].squeeze(0), 196, device) # idxs[-1] -> the last layer of the model that inattentive tokens were removed
     
-    elif method == "middle_layer_attn":
-        cam = model.blocks[5].attn.get_attn()
-        cam = Cam_Select_Attn(cam)
-
-
-    cam = fix_map(cam, model.num_tokens, device)
     return cam
 
-def GenVis(output,
-           label,
-           image, 
-           model, 
-           idxs,
-           method="rollout", 
-           head_fusion = "mean", 
-           discard_ratio = 0.9,
+def GenVis(output:torch.Tensor=None,
+           label:int=0,
+           image:torch.Tensor=None, 
+           model:torch.nn.Module=None, 
+           idxs:torch.Tensor=None,
+           method:str="rollout", 
+           head_fusion:str="mean", 
+           discard_ratio:float=0.9,
            device:torch.device=None):
     
     transformer_attribution = Gen_Attn_Map(output,
@@ -128,13 +165,13 @@ def GenVis(output,
     vis = ShowVis(transformer_attribution, image)
     return vis
 
-
-#### Utils Functions
+#### Utils Functions ####
 
 def ShowVis(activation_map, img):
     
     heatmap = torch.nn.functional.interpolate(activation_map, scale_factor=(224//14), mode='bilinear', align_corners=True)  #14->224
     heatmap = heatmap.reshape(224, 224).data.cpu().numpy() 
+    heatmap = (heatmap - np.min(heatmap)) / (np.max(heatmap) - np.min(heatmap))
     heatmap = cv2.applyColorMap(np.uint8(heatmap* 255), cv2.COLORMAP_JET)        
     heatmap = np.float32(heatmap) / 255
     
@@ -172,10 +209,6 @@ def VisualizationLoader_Binary(val_set:torch.utils.data.Dataset, args=None):
             nv_idx.append(i)
         if i==len(val_set)-1:
             break
-
-    # (2) Shuffle the indices randomly
-    """ random.shuffle(mel_idx)
-    random.shuffle(nv_idx) """
 
     # Select an equal number of indices for each class
     num_samples_per_class = min(len(mel_idx), len(nv_idx))
@@ -220,6 +253,10 @@ def Visualize_Activation(model: torch.nn.Module,
         transforms.Normalize((-mean[0] / std[0], -mean[1] / std[1], -mean[2] / std[2]), (1.0 / std[0], 1.0 / std[1], 1.0 / std[2])),
         transforms.ToPILImage()
     ])
+    
+    denormalize_transform = transforms.Compose([
+        transforms.Normalize((-mean[0] / std[0], -mean[1] / std[1], -mean[2] / std[2]), (1.0 / std[0], 1.0 / std[1], 1.0 / std[2])),
+    ])
 
     for j, (inputs, labels) in enumerate(dataloader):
         
@@ -230,43 +267,45 @@ def Visualize_Activation(model: torch.nn.Module,
             input=inputs[i].unsqueeze(0)
             image=reverse_transform(inputs[i])
                             
-            # (3) Set model to eval mode
-            model.eval()
-            
+            model.eval() # Set model to eval mode
+
             # (4) Obtain The Output of the Model
             with torch.cuda.amp.autocast():
                 output, idx = model(input, keep_rate, get_idx=True)
             predicted_class = int(torch.argmax(output))
 
-            # (7) Normalize the input image
+            # Normalize the input image
             img = input.permute(0, 2, 3, 1).squeeze(0).data.cpu().numpy()
             img = (img - np.min(img)) / (np.max(img) - np.min(img))    
+            
+            # Evit Mask
+            idxs = visualize_mask.get_real_idx(idx, None)
+            masked_img = visualize_mask.mask(denormalize_transform(input), idx=idxs[-1], patch_size=16) # Visualize the mask for the last layer
 
-            # (9) Obtain the class probabilities for 'MEL' heatmap 
-            #rollout=GenVis(output=output,label=0,image=img,model=model, idxs=idx, head_fusion="mean",discard_ratio=0,device=device)
-            """ rollout_discard=GenVis(output=output,label=0,image=img,model=model, idxs=idx, head_fusion="mean",device=device)
-            rollout_max=GenVis(output=output,label=0,image=img,model=model, idxs=idx, head_fusion="max",device=device)
-            rollout_min=GenVis(output=output,label=0,image=img,model=model, idxs=idx, head_fusion="min",device=device) """
-            #Grad_rollout=GenVis(output=output,label=0,image=img,model=model, idxs=idx, method="Grad_Rollout",device=device)
-            Grad_rollout_last=GenVis(output=output,label=0,image=img,model=model, idxs=idx, method="Grad_Rollout_last_layer",device=device)
-            rollout_last_layer=GenVis(output=output,label=0,image=img,model=model, idxs=idx, method="last_layer_attn",device=device)
-            #rollout_middle_layer=GenVis(output=output,label=0,image=img,model=model, idxs=idx, method="middle_layer_attn",device=device)
+            # Generate the activation maps
+            last_layer_grad_cam=GenVis(output=output,label=0,image=img,model=model, idxs=idxs, method="Grad_Cam_Last_Layer",device=device)
+            last_layer_attn=GenVis(output=output,label=0,image=img,model=model, idxs=idxs, method="Last_Layer_Attn",device=device)
             
             # Plot the original image
             axs[0, i].imshow(image)
             axs[0, i].set_title(Get_Predicted_Class(labels[i], predicted_class), fontsize=16)
             axs[0, i].axis('off');
+            
+            # Plot the masked image
+            axs[3, i].imshow(masked_img.squeeze().permute(1, 2, 0))
+            axs[3, i].set_title("Evit Mask")
+            axs[3, i].axis('off');
 
-            # Plot Probability Heatmap
-            axs[1, i].imshow(Grad_rollout_last)
-            axs[1, i].set_title("'MEL' Probability Heatmap")
+            # Plot last layer attention
+            axs[1, i].imshow(last_layer_attn)
+            axs[1, i].set_title("Last Layer Attn Map")
             axs[1, i].axis('off');
             
             # Plot Grad-CAM
-            axs[2, i].imshow(rollout_last_layer)
-            axs[2, i].set_title("Grad-CAM [MEL]")
+            axs[2, i].imshow(last_layer_grad_cam)
+            axs[2, i].set_title("Last Layer Grad-Cam")
             axs[2, i].axis('off');
-                       
+                           
         title = f"| MIL Class Activation Maps ({args.dataset}) | MIL Type: {args.mil_type} | Pooling Type: {args.pooling_type} |"
         plt.suptitle(title, fontsize=20)
         plt.subplots_adjust(wspace=0.1, hspace=0.1)
