@@ -332,10 +332,10 @@ def Class_Weighting(train_set, val_set, device, args):
     
     n_train_samples = len(train_set)
     
-    print(f"Classes: {train_set.classes}\n")
-    print(f"Classes map: {train_set.class_to_idx}\n")
-    print(f"Train distribution: {train_dist}\n")
-    print(f"Val distribution: {val_dist}\n")
+    print(f"Classes: {train_set.classes}")
+    print(f"Classes map: {train_set.class_to_idx}")
+    print(f"Train distribution: {train_dist}")
+    print(f"Val distribution: {val_dist}")
     
     if args.class_weights:
         if args.class_weights_type == 'Median':
@@ -347,7 +347,7 @@ def Class_Weighting(train_set, val_set, device, args):
     else: 
         class_weight = None
     
-    print(f"Class weights: {class_weight}\n")
+    print(f"Class weights: {class_weight}")
     
     return class_weight
   

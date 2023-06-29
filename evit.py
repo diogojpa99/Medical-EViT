@@ -189,16 +189,16 @@ class Attention(nn.Module):
 
         assert 0 < keep_rate <= 1, "keep_rate must > 0 and <= 1, got {0}".format(keep_rate)
         
-    def get_attn(self):
+    def get_attn_map(self):
         return self.attn
     
-    def save_attn(self, attn):
+    def save_attn_map(self, attn):
         self.attn = attn
         
-    def save_attn_gradients(self, attn_gradients):
+    def save_attn_map_gradients(self, attn_gradients):
             self.attn_gradients = attn_gradients
 
-    def get_attn_gradients(self):
+    def get_attn_map_gradients(self):
         return self.attn_gradients
     
     def forward(self, x, keep_rate=None, tokens=None):
@@ -214,9 +214,9 @@ class Attention(nn.Module):
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
         
-        self.save_attn(attn)
+        self.save_attn_map(attn)
         if attn.requires_grad == True:
-            attn.register_hook(self.save_attn_gradients)
+            attn.register_hook(self.save_attn_map_gradients)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)

@@ -86,7 +86,7 @@ def get_args_parser():
                         type=str, help='semantic granularity')
     
     parser.add_argument('--pretrained_dataset_name', default='ImageNet1k', type=str, help='pretrained dataset name')
-    parser.add_argument('--finetune_dataset_name', default='ISIC2019_CLEAN', type=str, help='fine tune dataset name')
+    parser.add_argument('--finetune_dataset_name', default='ISIC2019-Clean', type=str, choices=['ISIC2019-Clean', 'PH2', 'Derm7pt'], metavar='DATASET')
 
     parser.add_argument('--output_dir', default='', help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda', help='device to use for training / testing')
@@ -222,6 +222,7 @@ def get_args_parser():
     # New Visualization Params
     parser.add_argument('--visualize_complete', action='store_true', help='Visualize evit mask, last layer attention and grad_cam.')
     parser.add_argument('--visualize_num_images', default=8, type=int, help="")
+    parser.add_argument('--vis_num', default=1, type=int, help="")
     parser.add_argument('--patch_size', type=int, default=16, help='Patch size')
     parser.add_argument('--images_path', type=str, default='', help='Path to the images')
 
@@ -399,12 +400,9 @@ def main(args):
     
         if args.visualize_complete:
             print('******* Starting visualization process. *******')
-            visualization.Visualize_Activation(model=model, 
-                                                dataloader=data_loader_val, 
-                                                device=device,
-                                                keep_rate=args.base_keep_rate,
-                                                outputdir=args.output_dir,
-                                                args=args)
+            val_loader = visualization.VisualizationLoader_Binary(dataset_val, args)
+            #visualization.Visualize_Activation(model=model, dataloader=val_loader, device=device, keep_rate=args.base_keep_rate, outputdir=args.output_dir,args=args)
+            visualization.Visualize_Activation_Rollout(model=model, dataloader=val_loader, device=device, keep_rate=args.base_keep_rate, outputdir=args.output_dir, args=args)
             return
 
         if args.eval:
