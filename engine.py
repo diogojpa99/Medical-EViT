@@ -21,7 +21,7 @@ from helpers import adjust_keep_rate
 from visualize_mask import get_real_idx, mask, save_img_batch
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score, balanced_accuracy_score,\
+from sklearn.metrics import confusion_matrix, f1_score, precision_score, recall_score, balanced_accuracy_score, accuracy_score, \
     roc_curve, auc, roc_auc_score
 
 import numpy as np
@@ -182,12 +182,11 @@ def evaluate(model: torch.nn.Module,
         wandb.log({"Val Accuracy":test_acc},step=epoch)
         
     # Compute Metrics
-    preds=np.concatenate(preds)
-    targets=np.concatenate(targets)
+    preds=np.concatenate(preds); targets=np.concatenate(targets)
     results['confusion_matrix'], results['f1_score'] = confusion_matrix(targets, preds), f1_score(targets, preds, average=None) 
     results['precision'], results['recall'] = precision_score(targets, preds, average=None), recall_score(targets, preds, average=None)
     results['bacc'] = balanced_accuracy_score(targets, preds)
-    results['acc1'], results['loss'] = test_acc, test_loss
+    results['acc1'], results['loss'] = accuracy_score(targets, preds), test_loss
 
     return results
 

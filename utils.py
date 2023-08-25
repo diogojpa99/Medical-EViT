@@ -20,6 +20,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from collections import Counter
+import sklearn
+
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -320,34 +322,36 @@ def Are_All_Strings_Same(lst):
     return all(string == first_string for string in lst)
 
 def Class_Weighting(train_set, val_set, device, args):
-    
-    # Check the distribution of the dataset
+    """ Class weighting for imbalanced datasets.
+
+    Args:
+        train_set (torch.utils.data.Dataset): Training set.
+        val_set (torch.utils.data.Dataset): Validation set.
+        device (str): Device to use.
+        args (*args): Arguments.
+
+    Returns:
+        torch.Tensor: Class weights. (shape: (num_classes,))
+    """
     train_dist = dict(Counter(train_set.targets))
     val_dist = dict(Counter(val_set.targets))
     
-    train_dist['MEL'] = train_dist.pop(0)
-    train_dist['NV'] = train_dist.pop(1)
-    val_dist['MEL'] = val_dist.pop(0)
-    val_dist['NV'] = val_dist.pop(1)
+    train_dist = dict(sorted(train_dist.items(), key=lambda x: x[0]))
+    val_dist = dict(sorted(val_dist.items(), key=lambda x: x[0]))
     
-    n_train_samples = len(train_set)
-    
-    print(f"Classes: {train_set.classes}")
     print(f"Classes map: {train_set.class_to_idx}")
     print(f"Train distribution: {train_dist}")
     print(f"Val distribution: {val_dist}")
     
     if args.class_weights:
         if args.class_weights_type == 'Median':
-            class_weight = torch.Tensor([n_train_samples/train_dist['MEL'], 
-                                         n_train_samples/ train_dist['NV']]).to(device)
+            class_weight = torch.Tensor([(len(train_set)/x) for x in train_dist.values()]).to(device)
         elif args.class_weights_type == 'Manual':                   
-            class_weight = torch.Tensor([n_train_samples/(2*train_dist['MEL']), 
-                                         n_train_samples/(2*train_dist['NV'])]).to(device)
+            class_weight= torch.Tensor(sklearn.utils.class_weight.compute_class_weight(class_weight='balanced', classes=np.unique(train_set.targets), y=train_set.targets)).to(device)
     else: 
         class_weight = None
     
-    print(f"Class weights: {class_weight}")
+    print(f"Class weights: {class_weight}\n")
     
     return class_weight
   

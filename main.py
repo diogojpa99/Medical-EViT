@@ -39,6 +39,8 @@ def get_args_parser():
     parser.add_argument('--batch-size', default=64, type=int)
     parser.add_argument('--epochs', default=300, type=int)
     parser.add_argument('--gpu', default='cuda:1', help='GPU id to use.')
+    parser.add_argument('--nb_classes', default=2, type=int, help='number of classes')
+
     
     # EViT parameters
     parser.add_argument('--test_speed', action='store_true', help='whether to measure throughput of model')
@@ -231,6 +233,9 @@ def get_args_parser():
 
 def main(args):
     
+    if args.visualize_complete or args.eval or args.finetune or args.visualize_mask:
+        args.training = False
+        
     # Start a new wandb run to track this script
     if args.wandb:
         wandb.init(
@@ -251,8 +256,8 @@ def main(args):
         )
         wandb.run.name = args.run_name
         
-        if args.debug:
-            wandb=print
+        """ if args.debug:
+            wandb=print """
     
     if args.train_flag or args.finetune_flag:
         print('-------------------------------------------')
@@ -414,6 +419,14 @@ def main(args):
                                     device= device  ,
                                     epoch = 0,
                                     args=args)
+            
+            print('\n---------------- Val. stats for the best model ----------------\n',
+                f"Acc: {best_results['acc1']} | Bacc: {best_results['bacc']} | F1-score: {np.mean(best_results['f1_score'])} | \n",
+                f"Class-to-idx: {dataset_train.class_to_idx} | \n",
+                f"Precisions: {best_results['precision']} | \n",
+                f"Recalls: {best_results['recall']} | \n")
+            
+            return
         
     if args.finetune_flag or args.train_flag:
 
@@ -466,7 +479,7 @@ def main(args):
             if results['bacc'] > best_val_bacc and early_stopping.counter < args.counter_saver_threshold:
                 # Only want to save the best checkpoints if the best val bacc and the early stopping counter is less than the threshold
                 best_val_bacc = results['bacc']
-                checkpoint_paths = [output_dir / f'EViT-DropLoc_{args.drop_loc}-KeepRate_{args.base_keep_rate}-best_checkpoint.pth']
+                checkpoint_paths = [output_dir / f'EViT-KeepRate_{args.base_keep_rate}-best_checkpoint.pth']
                 best_results = results
                 for checkpoint_path in checkpoint_paths:
                     checkpoint_dict = {
@@ -474,7 +487,7 @@ def main(args):
                         'optimizer': optimizer.state_dict(),
                         'epoch': epoch,
                         'args': args,
-                    }
+                    }   
                     if args.lr_scheduler:
                         checkpoint_dict['lr_scheduler'] = lr_scheduler.state_dict()
                     if model_ema is not None:
@@ -491,27 +504,30 @@ def main(args):
         # Compute the total training time
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))        
+        
         print('\n---------------- Train stats for the last epoch ----------------\n',
             f"Acc: {train_stats['acc1']:.3f} | Bacc: {train_stats['bacc']:.3f} | F1-score: {np.mean(train_stats['f1_score']):.3f} | \n",
-            f"Precision[MEL]: {train_stats['precision'][0]:.3f} | Precision[NV]: {train_stats['precision'][1]:.3f} | \n",
-            f"Recall[MEL]: {train_stats['recall'][0]:.3f} | Recall[NV]: {train_stats['recall'][1]:.3f} | \n",
+            f"Class-to-idx: {dataset_train.class_to_idx} | \n",
+            f"Precisions: {best_results['precision']} | \n",
+            f"Recalls: {best_results['recall']} | \n",
             f"Confusion Matrix: {train_stats['confusion_matrix']}\n",
             f"Training time {total_time_str}\n",
             f"Number of attentive tokens throught the Encoder blocs: {train_stats['left_tokens']}\n")
         
         utils.plot_loss_and_acc_curves(train_results, val_results, output_dir=output_dir, args=args)
     
-    utils.plot_confusion_matrix(best_results["confusion_matrix"], {'MEL': 0, 'NV': 1}, output_dir=output_dir, args=args)
+    utils.plot_confusion_matrix(best_results["confusion_matrix"], dataset_train.class_to_idx, output_dir=output_dir, args=args)
     
     print('\n---------------- Val. stats for the best model ----------------\n',
-        f"Acc: {best_results['acc1']:.3f} | Bacc: {best_results['bacc']:.3f} | F1-score: {np.mean(best_results['f1_score']):.3f} | \n",
-        f"Precision[MEL]: {best_results['precision'][0]:.3f} | Precision[NV]: {best_results['precision'][1]:.3f} | \n",
-        f"Recall[MEL]: {best_results['recall'][0]:.3f} | Recall[NV]: {best_results['recall'][1]:.3f} | \n")
+        f"Acc: {best_results['acc1']} | Bacc: {best_results['bacc']} | F1-score: {np.mean(best_results['f1_score'])} | \n",
+        f"Class-to-idx: {dataset_train.class_to_idx} | \n",
+        f"Precisions: {best_results['precision']} | \n",
+        f"Recalls: {best_results['recall']} | \n")
     
     if wandb != print:
         wandb.log({"Best Val. Acc": best_results['acc1'], "Best Val. Bacc": best_results['bacc'], "Best Val. F1-score": np.mean(best_results['f1_score'])})
-        wandb.log({"Best Val. Precision[MEL]": best_results['precision'][0], "Best Val. Precision[NV]": best_results['precision'][1]})
-        wandb.log({"Best Val. Recall[MEL]": best_results['recall'][0], "Best Val. Recall[NV]": best_results['recall'][1]})
+        #wandb.log({"Best Val. Precision[MEL]": best_results['precision'][0], "Best Val. Precision[NV]": best_results['precision'][1]})
+        #wandb.log({"Best Val. Recall[MEL]": best_results['recall'][0], "Best Val. Recall[NV]": best_results['recall'][1]})
         wandb.log({"Training time": total_time})
         #wandb.finish()
         
