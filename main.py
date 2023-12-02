@@ -227,6 +227,9 @@ def get_args_parser():
     parser.add_argument('--vis_num', default=1, type=int, help="")
     parser.add_argument('--patch_size', type=int, default=16, help='Patch size')
     parser.add_argument('--images_path', type=str, default='', help='Path to the images')
+    
+    # Pos econding
+    parser.add_argument('--pos_encoding_flag', action='store_false', default=True, help='Whether to use positional encoding or not.')
 
     return parser
 
@@ -255,7 +258,7 @@ def main(args):
             }
         )
         wandb.run.name = args.run_name
-        
+    
         """ if args.debug:
             wandb=print """
     
@@ -314,7 +317,8 @@ def main(args):
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
         fuse_token=args.fuse_token,
-        img_size=(args.input_size, args.input_size)
+        img_size=(args.input_size, args.input_size),
+        pos_embedding = args.pos_encoding_flag,
     )
     
     ## Load the pretrained model 
@@ -406,8 +410,8 @@ def main(args):
         if args.visualize_complete:
             print('******* Starting visualization process. *******')
             val_loader = visualization.VisualizationLoader_Binary(dataset_val, args)
-            #visualization.Visualize_Activation(model=model, dataloader=val_loader, device=device, keep_rate=args.base_keep_rate, outputdir=args.output_dir,args=args)
-            visualization.Visualize_Activation_Rollout(model=model, dataloader=val_loader, device=device, keep_rate=args.base_keep_rate, outputdir=args.output_dir, args=args)
+            visualization.Visualize_Activation(model=model, dataloader=val_loader, device=device, keep_rate=args.base_keep_rate, outputdir=args.output_dir,args=args)
+            #visualization.Visualize_Activation_Rollout(model=model, dataloader=val_loader, device=device, keep_rate=args.base_keep_rate, outputdir=args.output_dir, args=args)
             return
 
         if args.eval:
@@ -435,6 +439,12 @@ def main(args):
         val_results = {'loss': [], 'acc': [], 'f1': [], 'cf_matrix': [], 'bacc': [], 'precision': [], 'recall': []}
         best_val_bacc = 0.0
         early_stopping = EarlyStopping(patience=args.patience, verbose=True, delta=args.delta, path=str(output_dir) +'/checkpoint.pth')
+        
+        if not args.pos_encoding_flag:
+            for i, (param_name, param) in enumerate(model.named_parameters()):
+                if param_name == 'pos_embed':
+                    param.requires_grad = False
+                    break 
         
         print(f"******* Start training for {(args.epochs + args.cooldown_epochs)} epochs. *******") 
         for epoch in range(args.start_epoch, (args.epochs + args.cooldown_epochs)):
