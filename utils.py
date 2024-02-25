@@ -18,10 +18,6 @@ import torch.distributed as dist
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
-from collections import Counter
-import sklearn
-
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -280,14 +276,14 @@ def Load_Pretrained_Model(model, optimizer, lr_scheduler, loss_scaler, model_ema
         if 'scaler' in checkpoint:
             loss_scaler.load_state_dict(checkpoint['scaler'])
             
-def Load_Pretrained_Model_Finetuning(model, args):
+def Load_Pretrained_Model_Finetuning(model, path, args):
     
     print("***** Importing model for finetuning. ******\n")
-    if args.finetune.startswith('https'):
+    if path.startswith('https'):
         checkpoint = torch.hub.load_state_dict_from_url(
-            args.finetune, map_location='cpu', check_hash=True)
+            path, map_location='cpu', check_hash=True)
     else:
-        checkpoint = torch.load(args.finetune, map_location='cpu')
+        checkpoint = torch.load(path, map_location='cpu')
 
     checkpoint_model = checkpoint['model']
     state_dict = model.state_dict()
@@ -321,40 +317,6 @@ def Are_All_Strings_Same(lst):
         return True
     first_string = lst[0]
     return all(string == first_string for string in lst)
-
-def Class_Weighting(train_set, val_set, device, args):
-    """ Class weighting for imbalanced datasets.
-
-    Args:
-        train_set (torch.utils.data.Dataset): Training set.
-        val_set (torch.utils.data.Dataset): Validation set.
-        device (str): Device to use.
-        args (*args): Arguments.
-
-    Returns:
-        torch.Tensor: Class weights. (shape: (num_classes,))
-    """
-    train_dist = dict(Counter(train_set.targets))
-    val_dist = dict(Counter(val_set.targets))
-    
-    train_dist = dict(sorted(train_dist.items(), key=lambda x: x[0]))
-    val_dist = dict(sorted(val_dist.items(), key=lambda x: x[0]))
-    
-    print(f"Classes map: {train_set.class_to_idx}")
-    print(f"Train distribution: {train_dist}")
-    print(f"Val distribution: {val_dist}")
-    
-    if args.class_weights:
-        if args.class_weights_type == 'Median':
-            class_weight = torch.Tensor([(len(train_set)/x) for x in train_dist.values()]).to(device)
-        elif args.class_weights_type == 'Manual':                   
-            class_weight= torch.Tensor(sklearn.utils.class_weight.compute_class_weight(class_weight='balanced', classes=np.unique(train_set.targets), y=train_set.targets)).to(device)
-    else: 
-        class_weight = None
-    
-    print(f"Class weights: {class_weight}\n")
-    
-    return class_weight
   
 def plot_loss_and_acc_curves(results_train, results_val, output_dir, args):
     """Plots training curves of a results dictionary.

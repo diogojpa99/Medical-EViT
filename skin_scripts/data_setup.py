@@ -1,23 +1,12 @@
-# Copyright (c) 2015-present, Facebook, Inc.
-# All rights reserved.
-# ------------------------------------------
-# Modification:
-# Added LMDB dataset -- Youwei Liang
 import os
-import json
 
+import torchvision.transforms as transforms
 from torchvision import datasets, transforms
-from torchvision.datasets.folder import ImageFolder, default_loader
-import torch
-
 
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.data import create_transform
 
-from folder2lmdb import ImageFolderLMDB
-
-
-def build_transform(is_train, args):
+def Build_Transform(is_train, args):
     
     resize_im = args.input_size > 32
     if is_train:
@@ -59,12 +48,12 @@ def build_transform(is_train, args):
     t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
     return transforms.Compose(t)
 
-def build_dataset(is_train, args):
+def Build_Dataset(is_train, args):
     
     root = os.path.join(args.data_path, 'train' if is_train else 'val')
             
-    if args.batch_aug:
-        transform = build_transform(is_train, args)
+    if args.skin_batch_aug:
+        transform = Build_Transform(is_train, args)
     else:
         transform = transforms.Compose([   
             transforms.ToTensor(),
@@ -72,6 +61,6 @@ def build_dataset(is_train, args):
         ])
             
     dataset = datasets.ImageFolder(root, transform=transform)
-    nb_classes = len(dataset.classes)
+    args.nb_classes = len(dataset.classes)
             
-    return dataset, nb_classes
+    return dataset

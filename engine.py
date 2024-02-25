@@ -14,7 +14,13 @@ import torch
 
 from timm.utils import accuracy, ModelEma
 
-from losses import DistillationLoss
+
+from typing import Optional
+from collections import Counter
+
+import numpy as np
+from sklearn.utils.class_weight import compute_class_weight
+    
 import utils
 
 from helpers import adjust_keep_rate
@@ -224,7 +230,7 @@ class EarlyStopping:
             self.best_score = score
             self.save_checkpoint(val_loss, model)
             
-        elif score < self.best_score + self.delta:
+        elif score < self.best_score - self.delta:
             # If we don't have an improvement, increase the counter 
             self.counter += 1
             #self.trace_func(f'\tEarlyStopping counter: {self.counter} out of {self.patience}')
@@ -244,6 +250,61 @@ class EarlyStopping:
         #torch.save(model.state_dict(), self.path)
         self.val_loss_min = val_loss
         
+def Class_Weighting(train_set:torch.utils.data.Dataset, 
+                    val_set:torch.utils.data.Dataset, 
+                    device:str='cuda:0', 
+                    args=None):
+    """ Class weighting for imbalanced datasets.
+
+    Args:
+        train_set (torch.utils.data.Dataset): Training set.
+        val_set (torch.utils.data.Dataset): Validation set.
+        device (str): Device to use.
+        args (*args): Arguments.
+
+    Returns:
+        torch.Tensor: Class weights. (shape: (2,))
+    """
+    train_dist = dict(Counter(train_set.targets))
+    val_dist = dict(Counter(val_set.targets))
+            
+    if args.class_weights == 'median':
+        class_weights = torch.Tensor([(len(train_set)/x) for x in train_dist.values()]).to(device)
+    else:                   
+        class_weights = torch.Tensor(compute_class_weight(class_weight=args.class_weights, 
+                                                        classes=np.unique(train_set.targets), y=train_set.targets)).to(device)
+
+    print(f"Classes map: {train_set.class_to_idx}"); print(f"Train distribution: {train_dist}"); print(f"Val distribution: {val_dist}")
+    print(f"Class weights: {class_weights}\n")
+    
+    return class_weights
+
+def Classifier_Warmup(model: torch.nn.Module, 
+                      current_epoch: int, 
+                      warmup_epochs: int, 
+                      args=None):    
+    """Function that defines if we are in the warmup phase or not.
+
+    Args:
+        model (torch.nn.Module): _description_
+        current_epoch (int): _description_
+        warmup_epochs (int): _description_
+        flag (bool): _description_
+        args (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    if current_epoch==0 and warmup_epochs>0:
+        for param in model.parameters():
+            param.requires_grad = False
+        for param in model.head.parameters():
+            param.requires_grad = True
+        print(f"[Info] - Warmup phase: Only the head is trainable.")
+    elif current_epoch == warmup_epochs:
+        for param in model.parameters():
+            param.requires_grad = True    
+        print(f"[Info] - Finetune phase: All parameters are trainable.")
 
 @torch.no_grad()
 def get_acc(data_loader, model, device, keep_rate=None, tokens=None):
