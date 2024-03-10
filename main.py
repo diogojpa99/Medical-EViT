@@ -33,6 +33,7 @@ warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 
 import wandb
 import os
+import gc
 os.environ["WANDB_MODE"] = "offline"
 
 def get_args_parser():
@@ -141,9 +142,8 @@ def get_args_parser():
     parser.add_argument('--weight-decay', type=float, default=0.05,
                         help='weight decay (default: 0.05)')
     
-    # Learning rate schedule parameters 
-    parser.add_argument('--lr_scheduler', action='store_true', default=False)
-    parser.add_argument('--sched', default='cosine', type=str, metavar='SCHEDULER', choices=['step', 'multistep', 'cosine', 'plateau','poly', 'exp'],
+    # Learning rate parameters 
+    parser.add_argument('--sched', default=None, type=str, metavar='SCHEDULER', choices=['step', 'multistep', 'cosine', 'plateau','poly', 'exp'],
                         help='LR scheduler (default: "cosine"')
     parser.add_argument('--lr', type=float, default=5e-3, metavar='LR',
                         help='learning rate (default: 1e-3)')
@@ -304,16 +304,14 @@ def main(args):
         sampler_val = torch.utils.data.SequentialSampler(val_set)
         
         data_loader_train = torch.utils.data.DataLoader(
-            train_set, 
-            sampler=sampler_train if args.dataset_type == 'Skin' else None,
+            train_set, sampler=sampler_train,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             pin_memory=(torch.cuda.is_available()),
             drop_last=True,
         )
         data_loader_val = torch.utils.data.DataLoader(
-            val_set, 
-            sampler=sampler_val if args.dataset_type == 'Skin' else None,
+            val_set, sampler=sampler_val,
             batch_size=int(1.5 * args.batch_size),
             num_workers=args.num_workers,
             pin_memory=(torch.cuda.is_available()),
@@ -404,11 +402,10 @@ def main(args):
     loss_scaler = NativeScaler() if args.loss_scaler else None
     
     # Create scheduler
-    if args.lr_scheduler:
-        if args.sched == 'exp':
-            lr_scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.decay_rate)
-        else:    
-            lr_scheduler,_ = create_scheduler(args, optimizer)
+    if args.sched == 'exp':
+        lr_scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.decay_rate)
+    else:    
+        lr_scheduler,_ = create_scheduler(args, optimizer)
     
     # Loss function
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
@@ -493,8 +490,8 @@ def main(args):
                                                      args=args)
             
             # Learning rate scheduler step
-            if args.lr_scheduler:
-                lr_scheduler.step((epoch+1))
+            if lr_scheduler is not None:
+                lr_scheduler.step(epoch+1)
             
             results = evaluate(model=model,
                                 dataloader=data_loader_val,
@@ -527,7 +524,7 @@ def main(args):
                         'epoch': epoch,
                         'args': args,
                     }   
-                    if args.lr_scheduler:
+                    if args.sched is not None:
                         checkpoint_dict['lr_scheduler'] = lr_scheduler.state_dict()
                     if model_ema is not None:
                         checkpoint_dict['model_ema'] = get_state_dict(model_ema)
@@ -565,10 +562,13 @@ def main(args):
     
     if wandb != print:
         wandb.log({"Best Val. Acc": best_results['acc1'], "Best Val. Bacc": best_results['bacc'], "Best Val. F1-score": np.mean(best_results['f1_score'])})
-        #wandb.log({"Best Val. Precision[MEL]": best_results['precision'][0], "Best Val. Precision[NV]": best_results['precision'][1]})
-        #wandb.log({"Best Val. Recall[MEL]": best_results['recall'][0], "Best Val. Recall[NV]": best_results['recall'][1]})
         wandb.log({"Training time": total_time})
-        #wandb.finish()
+        wandb.finish()
+        
+        
+    # Clean up
+    gc.collect()
+    torch.cuda.empty_cache()
         
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DeiT training and evaluation script', parents=[get_args_parser()])

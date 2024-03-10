@@ -90,15 +90,13 @@ def train_one_epoch(model: torch.nn.Module,
             loss_scaler(loss, optimizer, clip_grad=max_norm,
                         parameters=model.parameters(), create_graph=is_second_order)
         else:
-            loss.backward() # 3. Backward pass
-            
+            loss.backward() # 3. Backward pass            
             if max_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm) # 4. Clip gradients
-                
             optimizer.step() # 5. Update weights
 
         # Update LR Scheduler
-        if not args.cosine_one_cycle:
+        if not args.cosine_one_cycle and lr_scheduler is not None:
             lr_scheduler.step_update(num_updates=lr_num_updates)
         
         # Update Model Ema

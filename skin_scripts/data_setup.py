@@ -48,9 +48,9 @@ def Build_Transform(is_train, args):
     t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
     return transforms.Compose(t)
 
-def Build_Dataset(is_train, args):
+def Build_Dataset(is_train, data_path, args):
     
-    root = os.path.join(args.data_path, 'train' if is_train else 'val')
+    root = os.path.join(data_path, 'train' if is_train else 'val')
             
     if args.skin_batch_aug:
         transform = Build_Transform(is_train, args)
